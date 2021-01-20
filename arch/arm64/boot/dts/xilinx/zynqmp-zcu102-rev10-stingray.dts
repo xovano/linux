@@ -75,55 +75,87 @@
 	        #address-cells = <1>;
 	        #size-cells = <0>;
 
-	        out-gpios = <&gpio 145 0>, <&gpio 146 0>, <&gpio 147 0>,
-			<&gpio 148 0>, <&gpio 149 0>, <&gpio 150 0>,
-			<&gpio 151 0>, <&gpio 152 0>;
+	        out-gpios = <&gpio_exp 0 0>, <&gpio_exp 1 0>, <&gpio_exp 2 0>,
+			<&gpio_exp 3 0>, <&gpio_exp 5 0>, <&gpio_exp 6 0>,
+			<&gpio_exp 8 0>, <&gpio_exp 9 0>, <&gpio_exp 10 0>,
+			<&gpio_exp 11 0>, <&gpio_exp 12 0>, <&gpio_exp 13 0>,
+			<&gpio_exp 14 0>, <&gpio_exp 15 0>;
 		label = "xud_control";
 
 	        channel@0 {
 			reg = <0>;
-			label = "TX_RX_1";
+			label = "TX_RX_0";
 	        };
 
 	        channel@1 {
 			reg = <1>;
-			label = "IF_STATE_1";
+			label = "TX_RX_1";
 	        };
 
 	        channel@2 {
 			reg = <2>;
-			label = "RX_AMP_EN_1";
+			label = "TX_RX_2";
 	        };
 
 	        channel@3 {
 			reg = <3>;
-			label = "CTRL_PLL_1";
+			label = "TX_RX_3";
 	        };
 
 	        channel@4 {
 			reg = <4>;
-			label = "TX_RX_2";
+			label = "RX_AMP_EN";
 	        };
 
 	        channel@5 {
 			reg = <5>;
-			label = "IF_STATE_2";
+			label = "CTRL_PLL";
 	        };
 
 	        channel@6 {
 			reg = <6>;
-			label = "RX_AMP_EN_2";
+			label = "VA_AMP_CTRL0";
 	        };
 
 	        channel@7 {
 			reg = <7>;
-			label = "CTRL_PLL_1";
+			label = "VB_AMP_CTRL0";
+	        };
+
+	        channel@8 {
+			reg = <8>;
+			label = "VA_AMP_CTRL1";
+	        };
+
+	        channel@9 {
+			reg = <9>;
+			label = "VB_AMP_CTRL1";
+	        };
+
+	        channel@10 {
+			reg = <10>;
+			label = "VA_AMP_CTRL2";
+	        };
+
+	        channel@11 {
+			reg = <11>;
+			label = "VB_AMP_CTRL2";
+	        };
+
+	        channel@12 {
+			reg = <12>;
+			label = "VA_AMP_CTRL3";
+	        };
+
+	        channel@13 {
+			reg = <13>;
+			label = "VB_AMP_CTRL3";
 	        };
 	};
 };
 
 &fpga_axi {
-	axi_spi_pmod: axi_quad_spi@85200000 {
+	axi_spi_pmod: spi@85200000 {
 		#address-cells = <1>;
 		#size-cells = <0>;
 		bits-per-word = <8>;
@@ -146,10 +178,21 @@
 		interrupts = <0 110 IRQ_TYPE_LEVEL_HIGH>;
 		reg = <0x85100000 0x1000>;
 	};
+
+	axi_i2c_bob: i2c@85300000 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-iic-2.0", "xlnx,xps-iic-2.00.a";
+		interrupt-names = "iic2intc_irpt";
+		interrupts = <0 104 IRQ_TYPE_LEVEL_HIGH>;
+		reg = <0x85300000 0x1000>;
+	};
 };
 
 &axi_i2c_pmod {
-	ltc2992@6A {
+	ltc2992@6a {
                 #address-cells = <1>;
                 #size-cells = <0>;
                 compatible = "adi,ltc2992";
@@ -163,6 +206,16 @@
                         shunt-resistor-micro-ohms = <3500>;
                 };
         };
+};
+
+&axi_i2c_bob {
+	gpio_exp: gpio@68 {
+		compatible = "adi,adp5588-gpio";
+		reg = <0x68>;
+
+		#gpio-cells = <2>;
+		gpio-controller;
+	};
 };
 
 &axi_spi_pmod {
