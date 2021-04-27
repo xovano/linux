@@ -209,9 +209,9 @@
 };
 
 &axi_i2c_bob {
-	gpio_exp: gpio@68 {
+	gpio_exp: gpio@34 {
 		compatible = "adi,adp5588-gpio";
-		reg = <0x68>;
+		reg = <0x34>;
 
 		#gpio-cells = <2>;
 		gpio-controller;
