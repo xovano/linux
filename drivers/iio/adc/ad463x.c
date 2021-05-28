@@ -8,6 +8,7 @@
 #include <linux/device.h>
 #include <linux/dmaengine.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
@@ -210,6 +211,7 @@ struct ad463x_state {
 	struct spi_device		*spi;
 	struct pwm_device		*conversion_trigger;
 	struct pwm_device		*spi_engine_trigger;
+	struct gpio_desc		*gpio_reset;
 	struct ad463x_phy_config	phy;
 	struct ad463x_channel_config	channel_cfg[2];
 	unsigned int			sampling_frequency;
@@ -638,6 +640,13 @@ static int ad463x_write_raw(struct iio_dev *indio_dev,
 static int ad463x_setup(struct ad463x_state *st)
 {
 	int ret;
+
+	st->gpio_reset = devm_gpiod_get(&st->spi->dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(st->gpio_reset))
+		return PTR_ERR(st->gpio_reset);
+
+	gpiod_direction_output(st->gpio_reset, 1);
+	gpiod_set_value(st->gpio_reset, 0);
 
 	ret = ad463x_set_reg_access(st, true);
 	if (ret < 0)
