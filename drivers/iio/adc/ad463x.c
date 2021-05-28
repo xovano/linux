@@ -6,7 +6,11 @@
  */
 #include <linux/bitfield.h>
 #include <linux/device.h>
+#include <linux/dmaengine.h>
 #include <linux/err.h>
+#include <linux/iio/buffer.h>
+#include <linux/iio/buffer-dma.h>
+#include <linux/iio/buffer-dmaengine.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/kernel.h>
@@ -66,6 +70,22 @@
 #define AD463X_REG_READ_MASK(x)		(x | BIT(15))
 
 #define AD463X_SPI_REG_ACCESS_SPEED	40000000UL
+#define AD463X_SPI_SAMPLING_SPEED	80000000UL
+#define AD463X_SPI_WIDTH(mode, width)	(width >> (mode >> 6))
+
+#define AD4630_24_CHANNEL(_idx, _sidx, _storagebits, _realbits, _shift)	\
+	{								\
+		.type = IIO_VOLTAGE,					\
+		.indexed = 1,						\
+		.channel = _idx,					\
+		.scan_index = _sidx,					\
+		.scan_type = {						\
+			.sign = 's',					\
+			.storagebits = _storagebits,			\
+			.realbits = _realbits,				\
+			.shift = _shift,				\
+		},							\
+	}
 
 enum ad463x_id {
 	ID_AD4630_24,
@@ -355,6 +375,101 @@ static int ad463x_setup(struct ad463x_state *st)
 	return ad463x_phy_init(st);
 }
 
+static int ad463x_dma_buffer_submit_block(struct iio_dma_buffer_queue *queue,
+					  struct iio_dma_buffer_block *block)
+{
+	block->block.bytes_used = block->block.size;
+
+	return iio_dmaengine_buffer_submit_block(queue, block, DMA_DEV_TO_MEM);
+}
+
+static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
+{
+	struct ad463x_state *st = iio_priv(indio_dev);
+	struct spi_message msg;
+	unsigned int data[4];
+	int ret;
+
+	struct spi_transfer xfer = {
+		.tx_buf = NULL,
+		.rx_buf = data,
+		.len = 1,
+		.speed_hz = AD463X_SPI_SAMPLING_SPEED,
+	};
+
+	xfer.bits_per_word = AD463X_SPI_WIDTH(
+			st->phy.lane_mode,
+			ad463x_data_widths[st->phy.out_data_mode]);
+	if (st->phy.data_rate_mode == AD463X_DUAL_DATA_RATE)
+		xfer.bits_per_word /= 2;
+
+	ret = ad463x_set_reg_access(st, false);
+	if (ret < 0)
+		return ret;
+
+	spi_bus_lock(st->spi->master);
+	spi_message_init(&msg);
+	spi_message_add_tail(&xfer, &msg);
+	spi_engine_offload_load_msg(st->spi, &msg);
+	spi_engine_offload_enable(st->spi, true);
+
+	return 0;
+}
+
+static int ad463x_buffer_postdisable(struct iio_dev *indio_dev)
+{
+	struct ad463x_state *st = iio_priv(indio_dev);
+	int ret;
+
+	spi_engine_offload_enable(st->spi, false);
+	spi_bus_unlock(st->spi->master);
+
+	ret = ad463x_set_reg_access(st, true);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static const struct iio_chan_spec ad463x_channels[][5][4] = {
+	[ID_AD4630_24] = {
+		[AD463X_16_DIFF_8_COM] = {
+			AD4630_24_CHANNEL(0, 0, 32, 16, 8),
+			AD4630_24_CHANNEL(1, 0, 32, 8,  16),
+			AD4630_24_CHANNEL(2, 1, 32, 16, 8),
+			AD4630_24_CHANNEL(3, 1, 32, 8,  16),
+		},
+		[AD463X_24_DIFF] = {
+			AD4630_24_CHANNEL(0, 0, 32, 24, 0),
+			AD4630_24_CHANNEL(1, 1, 32, 24, 0),
+		},
+		[AD463X_24_DIFF_8_COM] = {
+			AD4630_24_CHANNEL(0, 0, 32, 24, 8),
+			AD4630_24_CHANNEL(1, 0, 32, 8,  24),
+			AD4630_24_CHANNEL(2, 1, 32, 24, 8),
+			AD4630_24_CHANNEL(3, 1, 32, 8,  24),
+		},
+		[AD463X_30_AVERAGED_DIFF] = {
+			AD4630_24_CHANNEL(0, 0, 32, 30, 0),
+			AD4630_24_CHANNEL(1, 1, 32, 30, 0),
+		},
+		[AD463X_32_PATTERN] = {
+			AD4630_24_CHANNEL(0, 0, 32, 32, 0),
+			AD4630_24_CHANNEL(1, 1, 32, 32, 0),
+		},
+	},
+};
+
+static const struct iio_dma_buffer_ops ad463x_dma_buffer_ops = {
+	.submit = ad463x_dma_buffer_submit_block,
+	.abort = iio_dmaengine_buffer_abort,
+};
+
+static const struct iio_buffer_setup_ops ad463x_buffer_setup_ops = {
+	.preenable = &ad463x_buffer_preenable,
+	.postdisable = &ad463x_buffer_postdisable,
+};
+
 static const struct spi_device_id ad463x_id_table[] = {
 	{"ad4630-24",	ID_AD4630_24},
 	{}
@@ -376,6 +491,7 @@ static const struct iio_info ad463x_infos[] = {
 static int ad463x_probe(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev;
+	struct iio_buffer *buffer;
 	struct ad463x_state *st;
 	unsigned long device_id;
 	int ret;
@@ -393,6 +509,8 @@ static int ad463x_probe(struct spi_device *spi)
 	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad463x_infos[device_id];
+	indio_dev->modes = INDIO_BUFFER_HARDWARE;
+	indio_dev->setup_ops = &ad463x_buffer_setup_ops;
 
 	ret = ad463x_parse_dt(st);
 	if (ret < 0) {
@@ -401,11 +519,26 @@ static int ad463x_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
+	indio_dev->channels =
+		ad463x_channels[device_id][st->phy.out_data_mode];
+	indio_dev->num_channels = 2;
+	if (st->phy.out_data_mode == AD463X_16_DIFF_8_COM ||
+	    st->phy.out_data_mode == AD463X_24_DIFF_8_COM)
+		indio_dev->num_channels *= 2;
+
 	ret = ad463x_setup(st);
 	if (ret < 0) {
 		dev_err(&spi->dev, "%s setup failed\n", indio_dev->name);
 		return -ENOEXEC;
 	}
+
+	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent, "rx",
+						 &ad463x_dma_buffer_ops,
+						 indio_dev);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	iio_device_attach_buffer(indio_dev, buffer);
 
 	return devm_iio_device_register(&spi->dev, indio_dev);
 }
