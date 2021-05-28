@@ -11,6 +11,7 @@
 #include <linux/iio/sysfs.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-engine.h>
@@ -51,6 +52,11 @@
 #define AD463X_REG_PAT3			0x26
 #define AD463X_REG_DIG_DIAG		0x34
 #define AD463X_REG_DIG_ERR		0x35
+/* MODES */
+#define AD463X_LANE_MODE_MSK		GENMASK(7, 6)
+#define AD463X_CLK_MODE_MSK		GENMASK(5, 4)
+#define AD463X_DATA_RATE_MODE_MSK	BIT(3)
+#define AD463X_OUT_DATA_MODE_MSK	GENMASK(2, 0)
 /* EXIT_CFG_MD */
 #define AD463X_EXIT_CFG_MODE		BIT(0)
 
@@ -73,8 +79,76 @@ enum ad463x_id {
 	ID_AD4632_16,
 };
 
+enum ad463x_lane_mode {
+	AD463X_ONE_LANE_PER_CH	= 0x00,
+	AD463X_TWO_LANES_PER_CH	= BIT(6),
+	AD463X_FOUR_LANES_PER_CH = BIT(7),
+	AD463X_SHARED_TWO_CH = (BIT(6) | BIT(7)),
+};
+
+enum ad463x_clock_mode {
+	AD463X_SPI_COMPATIBLE_MODE = 0x00,
+	AD463X_ECHO_CLOCK_MODE = BIT(4),
+	AD463X_CLOCK_MASTER_MODE = BIT(5),
+};
+
+enum ad463x_data_rate_mode {
+	AD463X_SINGLE_DATA_RATE = 0x00,
+	AD463X_DUAL_DATA_RATE = BIT(3),
+};
+
+enum ad463x_out_data_mode {
+	AD463X_24_DIFF = 0x00,
+	AD463X_16_DIFF_8_COM = 0x01,
+	AD463X_24_DIFF_8_COM = 0x02,
+	AD463X_30_AVERAGED_DIFF = 0x03,
+	AD463X_32_PATTERN = 0x04
+};
+
+static const char * const ad463x_lane_mdoes[] = {
+	[AD463X_SHARED_TWO_CH] = "one-lane-shared",
+	[AD463X_ONE_LANE_PER_CH] = "one-lane-per-ch",
+	[AD463X_TWO_LANES_PER_CH] = "two-lanes-per-ch",
+	[AD463X_FOUR_LANES_PER_CH] = "four-lanes-per-ch",
+};
+
+static const char * const ad463x_clock_mdoes[] = {
+	[AD463X_SPI_COMPATIBLE_MODE] = "spi-compatible",
+	[AD463X_ECHO_CLOCK_MODE] = "echo-clock",
+	[AD463X_CLOCK_MASTER_MODE] = "clock-master",
+};
+
+static const char * const ad463x_data_rates[] = {
+	[AD463X_SINGLE_DATA_RATE] = "single",
+	[AD463X_DUAL_DATA_RATE] = "dual"
+};
+
+static const char * const ad463x_out_data_modes[] = {
+	[AD463X_16_DIFF_8_COM] = "16diff-8com",
+	[AD463X_24_DIFF] = "24diff",
+	[AD463X_24_DIFF_8_COM] = "24diff-8com",
+	[AD463X_30_AVERAGED_DIFF] = "30diff-avg",
+	[AD463X_32_PATTERN] = "32pat"
+};
+
+static const unsigned int ad463x_data_widths[] = {
+	[AD463X_16_DIFF_8_COM] = 24,
+	[AD463X_24_DIFF] = 24,
+	[AD463X_24_DIFF_8_COM] = 32,
+	[AD463X_30_AVERAGED_DIFF] = 30,
+	[AD463X_32_PATTERN] = 32
+};
+
+struct ad463x_phy_config {
+	enum ad463x_data_rate_mode	data_rate_mode;
+	enum ad463x_out_data_mode	out_data_mode;
+	enum ad463x_clock_mode		clock_mode;
+	enum ad463x_lane_mode		lane_mode;
+};
+
 struct ad463x_state {
 	struct spi_device		*spi;
+	struct ad463x_phy_config	phy;
 
 	union {
 		unsigned char		buff[3];
@@ -176,6 +250,100 @@ static int ad463x_set_reg_access(struct ad463x_state *st, bool state)
 }
 
 
+static int ad463x_phy_init(struct ad463x_state *st)
+{
+	int ret;
+
+	ret = ad463x_spi_write_reg_masked(st, AD463X_REG_MODES,
+					  AD463X_LANE_MODE_MSK,
+					  st->phy.lane_mode);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_spi_write_reg_masked(st, AD463X_REG_MODES,
+					  AD463X_CLK_MODE_MSK,
+					  st->phy.clock_mode);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_spi_write_reg_masked(st, AD463X_REG_MODES,
+					  AD463X_DATA_RATE_MODE_MSK,
+					  st->phy.data_rate_mode);
+	if (ret < 0)
+		return ret;
+
+	return ad463x_spi_write_reg_masked(st, AD463X_REG_MODES,
+					   AD463X_OUT_DATA_MODE_MSK,
+					   st->phy.out_data_mode);
+}
+
+static int ad463x_get_string_index(const char *string,
+				   const char * const *string_array,
+				   size_t array_size,
+				   unsigned int *idx)
+{
+	int i;
+
+	for (i = 0; i < array_size; i++) {
+		if (string_array[i]) {
+			if (!strcmp(string, string_array[i])) {
+				*idx = i;
+				return 0;
+			}
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int ad463x_parse_dt(struct ad463x_state *st)
+{
+	struct iio_dev *indio_dev = iio_priv_to_dev(st);
+	struct fwnode_handle *fwnode;
+	const char *data_rate_mode;
+	const char *out_data_mode;
+	const char *clock_mode;
+	const char *lane_mode;
+	int ret;
+
+	fwnode = dev_fwnode(indio_dev->dev.parent);
+
+	ret = fwnode_property_read_string(fwnode, "adi,lane-mode",
+					  &lane_mode);
+	if (ret < 0)
+		return ret;
+	ret = fwnode_property_read_string(fwnode, "adi,clock-mode",
+					  &clock_mode);
+	if (ret < 0)
+		return ret;
+	ret = fwnode_property_read_string(fwnode, "adi,data-rate-mode",
+					  &data_rate_mode);
+	if (ret < 0)
+		return ret;
+	ret = fwnode_property_read_string(fwnode, "adi,out-data-mode",
+					  &out_data_mode);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_get_string_index(lane_mode, ad463x_lane_mdoes,
+				      ARRAY_SIZE(ad463x_lane_mdoes),
+				      &st->phy.lane_mode);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_get_string_index(clock_mode, ad463x_clock_mdoes,
+				      ARRAY_SIZE(ad463x_clock_mdoes),
+				      &st->phy.clock_mode);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_get_string_index(data_rate_mode, ad463x_data_rates,
+				      ARRAY_SIZE(ad463x_data_rates),
+				      &st->phy.data_rate_mode);
+	if (ret < 0)
+		return ret;
+
+	return ad463x_get_string_index(out_data_mode, ad463x_out_data_modes,
+				       ARRAY_SIZE(ad463x_out_data_modes),
+				       &st->phy.out_data_mode);
+}
+
 static int ad463x_setup(struct ad463x_state *st)
 {
 	int ret;
@@ -184,7 +352,7 @@ static int ad463x_setup(struct ad463x_state *st)
 	if (ret < 0)
 		return ret;
 
-	return 0;
+	return ad463x_phy_init(st);
 }
 
 static const struct spi_device_id ad463x_id_table[] = {
@@ -225,6 +393,13 @@ static int ad463x_probe(struct spi_device *spi)
 	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad463x_infos[device_id];
+
+	ret = ad463x_parse_dt(st);
+	if (ret < 0) {
+		dev_err(&spi->dev, "%s invalid devicetree configuration\n",
+			indio_dev->name);
+		return -EINVAL;
+	}
 
 	ret = ad463x_setup(st);
 	if (ret < 0) {
