@@ -65,6 +65,9 @@
 /* EXIT_CFG_MD */
 #define AD463X_EXIT_CFG_MODE		BIT(0)
 
+#define AD463X_REG_CHAN_OFFSET(ch, pos)	(AD463X_REG_OFFSET_BASE + (3*ch) + pos)
+#define AD463X_REG_CHAN_GAIN(ch, pos)	(AD463X_REG_GAIN_BASE + (2 * ch) + pos)
+
 #define AD463X_CONFIG_TIMING		0x2000
 #define AD463X_REG_READ_DUMMY		0x00
 #define AD463X_REG_WRITE_MASK(x)	(x & 0x7FFF)
@@ -84,6 +87,8 @@
 		.indexed = 1,						\
 		.channel = _idx,					\
 		.scan_index = _sidx,					\
+		.info_mask_separate = BIT(IIO_CHAN_INFO_HARDWAREGAIN)|	\
+				      BIT(IIO_CHAN_INFO_OFFSET),	\
 		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),\
 		.scan_type = {						\
 			.sign = 's',					\
@@ -176,10 +181,16 @@ struct ad463x_phy_config {
 	enum ad463x_lane_mode		lane_mode;
 };
 
+struct ad463x_channel_config {
+	unsigned int offset;
+	unsigned short gain;
+};
+
 struct ad463x_state {
 	struct spi_device		*spi;
 	struct pwm_device		*conversion_trigger;
 	struct ad463x_phy_config	phy;
+	struct ad463x_channel_config	channel_cfg[2];
 	unsigned int			sampling_frequency;
 
 	union {
@@ -420,6 +431,47 @@ static int ad463x_parse_dt(struct ad463x_state *st)
 				       &st->phy.out_data_mode);
 }
 
+static int ad463x_set_chan_offset(struct ad463x_state *st, int chan_idx, unsigned int offset)
+{
+	int ret;
+
+	ret = ad463x_spi_write_reg(st, AD463X_REG_CHAN_OFFSET(chan_idx, 0), offset);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_spi_write_reg(st, AD463X_REG_CHAN_OFFSET(chan_idx, 1), offset >> 8);
+	if (ret < 0)
+		return ret;
+	ret = ad463x_spi_write_reg(st, AD463X_REG_CHAN_OFFSET(chan_idx, 2), offset >> 16);
+	if (ret < 0)
+		return ret;
+
+	st->channel_cfg[chan_idx].offset = offset;
+
+	return 0;
+}
+
+static int ad463x_set_chan_gain(struct ad463x_state *st, int chan_idx, int gain_int, int gain_frac)
+{
+	int ret;
+	unsigned int gain;
+
+	gain = ((abs(gain_int) * 10000) + (abs(gain_frac) / 100));
+	gain *= 0x8000;
+	gain /= 10000;
+
+	ret = ad463x_spi_write_reg(st, AD463X_REG_CHAN_GAIN(chan_idx, 0), gain);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_spi_write_reg(st, AD463X_REG_CHAN_GAIN(chan_idx, 1), gain >> 8);
+	if (ret < 0)
+		return ret;
+
+	st->channel_cfg[chan_idx].gain = gain;
+
+	return 0;
+}
+
 static int ad463x_read_raw(struct iio_dev *indio_dev,
 			   struct iio_chan_spec const *chan,
 			   int *val,
@@ -427,10 +479,22 @@ static int ad463x_read_raw(struct iio_dev *indio_dev,
 			   long info)
 {
 	struct ad463x_state *st = iio_priv(indio_dev);
+	unsigned int temp;
 
 	switch (info) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = st->sampling_frequency;
+
+		return IIO_VAL_INT;
+	case IIO_CHAN_INFO_HARDWAREGAIN:
+		temp = st->channel_cfg[chan->scan_index].gain * 10000;
+		temp /= 0x8000;
+		*val = temp / 10000;
+		*val2 = (temp - (*val * 10000)) * 100;
+
+		return IIO_VAL_INT_PLUS_MICRO;
+	case IIO_CHAN_INFO_OFFSET:
+		*val = st->channel_cfg[chan->scan_index].offset;
 
 		return IIO_VAL_INT;
 	default:
@@ -450,6 +514,13 @@ static int ad463x_write_raw(struct iio_dev *indio_dev,
 	switch (info) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		return ad463x_set_sampling_freq(st, val);
+	case IIO_CHAN_INFO_HARDWAREGAIN:
+		if (val > 1)
+			return -EINVAL;
+
+		return ad463x_set_chan_gain(st, chan->channel, val, val2);
+	case IIO_CHAN_INFO_OFFSET:
+		return ad463x_set_chan_offset(st, chan->channel, val);
 	default:
 		return -EINVAL;
 	}
@@ -466,6 +537,22 @@ static int ad463x_setup(struct ad463x_state *st)
 		return ret;
 
 	ret = ad463x_phy_init(st);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_set_chan_gain(st, 0, 1, 0);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_set_chan_gain(st, 1, 1, 0);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_set_chan_offset(st, 0, 0);
+	if (ret < 0)
+		return ret;
+
+	ret = ad463x_set_chan_offset(st, 1, 0);
 	if (ret < 0)
 		return ret;
 
