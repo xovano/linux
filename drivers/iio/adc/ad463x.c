@@ -16,6 +16,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/property.h>
+#include <linux/pwm.h>
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-engine.h>
@@ -73,12 +74,17 @@
 #define AD463X_SPI_SAMPLING_SPEED	80000000UL
 #define AD463X_SPI_WIDTH(mode, width)	(width >> (mode >> 6))
 
+#define AD463X_FREQ_TO_PERIOD(f)	DIV_ROUND_UP(USEC_PER_SEC, \
+						     (f / NSEC_PER_USEC))
+#define AD463X_TRIGGER_PULSE_WIDTH_NS	10
+
 #define AD4630_24_CHANNEL(_idx, _sidx, _storagebits, _realbits, _shift)	\
 	{								\
 		.type = IIO_VOLTAGE,					\
 		.indexed = 1,						\
 		.channel = _idx,					\
 		.scan_index = _sidx,					\
+		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),\
 		.scan_type = {						\
 			.sign = 's',					\
 			.storagebits = _storagebits,			\
@@ -159,6 +165,10 @@ static const unsigned int ad463x_data_widths[] = {
 	[AD463X_32_PATTERN] = 32
 };
 
+static const unsigned int ad463x_sampling_rates[] = {
+	10000, 50000, 100000, 200000, 500000, 1000000, 1750000, 2000000,
+};
+
 struct ad463x_phy_config {
 	enum ad463x_data_rate_mode	data_rate_mode;
 	enum ad463x_out_data_mode	out_data_mode;
@@ -168,7 +178,9 @@ struct ad463x_phy_config {
 
 struct ad463x_state {
 	struct spi_device		*spi;
+	struct pwm_device		*conversion_trigger;
 	struct ad463x_phy_config	phy;
+	unsigned int			sampling_frequency;
 
 	union {
 		unsigned char		buff[3];
@@ -269,6 +281,50 @@ static int ad463x_set_reg_access(struct ad463x_state *st, bool state)
 					AD463X_EXIT_CFG_MODE);
 }
 
+static ssize_t ad463x_sampling_freq_avail(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	ssize_t len = 0;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ad463x_sampling_rates); i++)
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%d ",
+				 ad463x_sampling_rates[i]);
+	buf[len - 1] = '\n';
+
+	return len;
+}
+static IIO_DEV_ATTR_SAMP_FREQ_AVAIL(ad463x_sampling_freq_avail);
+
+static int ad463x_set_sampling_freq(struct ad463x_state *st,
+				    unsigned int freq)
+{
+	struct pwm_state conversion_state;
+	int ret;
+
+	conversion_state.period = AD463X_FREQ_TO_PERIOD(freq);
+	conversion_state.duty_cycle = AD463X_TRIGGER_PULSE_WIDTH_NS;
+	conversion_state.offset = 0;
+
+	ret = pwm_apply_state(st->conversion_trigger, &conversion_state);
+	if (ret < 0)
+		return ret;
+
+	st->sampling_frequency = freq;
+
+	return 0;
+}
+
+static int ad463x_set_conversion(struct ad463x_state *st, bool enabled)
+{
+	struct pwm_state conversion_state;
+
+	pwm_get_state(st->conversion_trigger, &conversion_state);
+	conversion_state.enabled = enabled;
+
+	return pwm_apply_state(st->conversion_trigger, &conversion_state);
+}
 
 static int ad463x_phy_init(struct ad463x_state *st)
 {
@@ -364,6 +420,43 @@ static int ad463x_parse_dt(struct ad463x_state *st)
 				       &st->phy.out_data_mode);
 }
 
+static int ad463x_read_raw(struct iio_dev *indio_dev,
+			   struct iio_chan_spec const *chan,
+			   int *val,
+			   int *val2,
+			   long info)
+{
+	struct ad463x_state *st = iio_priv(indio_dev);
+
+	switch (info) {
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		*val = st->sampling_frequency;
+
+		return IIO_VAL_INT;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int ad463x_write_raw(struct iio_dev *indio_dev,
+			    struct iio_chan_spec const *chan,
+			    int val,
+			    int val2,
+			    long info)
+{
+	int ret;
+	struct ad463x_state *st = iio_priv(indio_dev);
+
+	switch (info) {
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		return ad463x_set_sampling_freq(st, val);
+	default:
+		return -EINVAL;
+	}
+
+	return ret;
+}
+
 static int ad463x_setup(struct ad463x_state *st)
 {
 	int ret;
@@ -372,7 +465,11 @@ static int ad463x_setup(struct ad463x_state *st)
 	if (ret < 0)
 		return ret;
 
-	return ad463x_phy_init(st);
+	ret = ad463x_phy_init(st);
+	if (ret < 0)
+		return ret;
+
+	return ad463x_set_sampling_freq(st, 1000000);
 }
 
 static int ad463x_dma_buffer_submit_block(struct iio_dma_buffer_queue *queue,
@@ -413,7 +510,7 @@ static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
 	spi_engine_offload_load_msg(st->spi, &msg);
 	spi_engine_offload_enable(st->spi, true);
 
-	return 0;
+	return ad463x_set_conversion(st, true);
 }
 
 static int ad463x_buffer_postdisable(struct iio_dev *indio_dev)
@@ -428,7 +525,12 @@ static int ad463x_buffer_postdisable(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	return 0;
+	return ad463x_set_conversion(st, false);
+}
+
+static void ad463x_cnv_diasble(void *data)
+{
+	pwm_disable(data);
 }
 
 static const struct iio_chan_spec ad463x_channels[][5][4] = {
@@ -482,8 +584,20 @@ static const struct of_device_id ad463x_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ad463x_of_match);
 
+static struct attribute *ad463x_attributes[] = {
+	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
+	NULL
+};
+
+static const struct attribute_group ad463x_group = {
+	.attrs = ad463x_attributes,
+};
+
 static const struct iio_info ad463x_infos[] = {
 	[ID_AD4630_24] = {
+		.attrs = &ad463x_group,
+		.read_raw = &ad463x_read_raw,
+		.write_raw = &ad463x_write_raw,
 		.debugfs_reg_access = &ad463x_reg_access,
 	}
 };
@@ -503,6 +617,14 @@ static int ad463x_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 
 	st->spi = spi;
+	st->conversion_trigger = devm_pwm_get(&spi->dev, "cnv");
+	if (IS_ERR(st->conversion_trigger))
+		return PTR_ERR(st->conversion_trigger);
+
+	ret = devm_add_action_or_reset(&spi->dev, ad463x_cnv_diasble,
+				       st->conversion_trigger);
+	if (ret < 0)
+		return ret;
 
 	device_id = spi_get_device_id(st->spi)->driver_data;
 
