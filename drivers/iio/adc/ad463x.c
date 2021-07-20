@@ -85,15 +85,20 @@
 						     (f / NSEC_PER_USEC))
 #define AD463X_TRIGGER_PULSE_WIDTH_NS	10
 
-#define AD4630_24_CHANNEL(_idx, _sidx, _storagebits, _realbits, _shift)	\
+#define AD463X_T_CONV_HI		10
+#define AD463X_T_CONV			300
+
+#define AD4630_24_CHANNEL(_name, _idx, _sidx,				\
+			  _storagebits, _realbits, _shift)		\
 	{								\
 		.type = IIO_VOLTAGE,					\
-		.indexed = 1,						\
-		.channel = _idx,					\
-		.scan_index = _sidx,					\
 		.info_mask_separate = BIT(IIO_CHAN_INFO_HARDWAREGAIN)|	\
 				      BIT(IIO_CHAN_INFO_OFFSET),	\
 		.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),\
+		.indexed = 1,						\
+		.extend_name = _name,					\
+		.channel = _idx,					\
+		.scan_index = _sidx,					\
 		.ext_info = ad463x_ext_info,				\
 		.scan_type = {						\
 			.sign = 's',					\
@@ -186,8 +191,8 @@ static const char * const ad463x_power_modes[] = {
 };
 
 static const char * const ad463x_average_modes[] = {
-	"2", "4", "8", "16", "32", "64", "128", "256", "512", "1024",
-	"2048", "4096", "8192", "16384", "32768", "65536",
+	"OFF", "2", "4", "8", "16", "32", "64", "128", "256", "512",
+	"1024", "2048", "4096", "8192", "16384", "32768", "65536",
 };
 
 static const unsigned int ad463x_sampling_rates[] = {
@@ -293,10 +298,10 @@ static int ad463x_reg_access(struct iio_dev *indio_dev,
 	if (readval) {
 		ret = ad463x_spi_read_reg(st, reg, readval);
 	} else {
-		if (reg == AD463X_EXIT_CFG_MODE ||
-		    reg == AD463X_REG_AVG ||
-		    reg == AD463X_REG_MODES)
-			return -EINVAL;
+		// if (reg == AD463X_EXIT_CFG_MODE ||
+		//     reg == AD463X_REG_AVG ||
+		//     reg == AD463X_REG_MODES)
+		// 	return -EINVAL;
 		ret = ad463x_spi_write_reg(st, reg, writeval);
 	}
 
@@ -335,29 +340,26 @@ static int ad463x_set_sampling_freq(struct ad463x_state *st,
 				    unsigned int freq)
 {
 	struct pwm_state conversion_state, spi_trigger_state;
-	int spi_transfer_time;
 	int ret;
 
 	conversion_state.period = AD463X_FREQ_TO_PERIOD(freq);
 	conversion_state.duty_cycle = AD463X_TRIGGER_PULSE_WIDTH_NS;
 	conversion_state.offset = 0;
-
+	
 	ret = pwm_apply_state(st->conversion_trigger, &conversion_state);
 	if (ret < 0)
 		return ret;
 
-	if (st->phy.out_data_mode == AD463X_30_AVERAGED_DIFF) {
-		spi_transfer_time = AD463X_FREQ_TO_PERIOD(AD463X_SPI_SAMPLING_SPEED) *
-				    (ad463x_data_widths[st->phy.out_data_mode] + 3);
-		spi_trigger_state.duty_cycle = conversion_state.period * 
-					       (st->phy.num_avg_samples + 1);
-		spi_trigger_state.period = spi_trigger_state.duty_cycle + spi_transfer_time;
-		spi_trigger_state.offset = 0;
+	spi_trigger_state.duty_cycle = conversion_state.duty_cycle ;
+	spi_trigger_state.period = conversion_state.period;
+	spi_trigger_state.offset = 10;
 
-		ret = pwm_apply_state(st->spi_engine_trigger, &spi_trigger_state);
-		if (ret < 0)
-			return ret;
-	}
+	if (st->phy.out_data_mode == AD463X_30_AVERAGED_DIFF)
+		spi_trigger_state.period *= st->phy.num_avg_samples;
+
+	ret = pwm_apply_state(st->spi_engine_trigger, &spi_trigger_state);
+	if (ret < 0)
+		return ret;
 
 	st->sampling_frequency = freq;
 
@@ -376,14 +378,12 @@ static int ad463x_set_conversion(struct ad463x_state *st, bool enabled)
 	if (ret < 0)
 		return ret;
 
-	if (st->phy.out_data_mode == AD463X_30_AVERAGED_DIFF) {
-		pwm_get_state(st->spi_engine_trigger, &spi_trigger_state);
-		spi_trigger_state.enabled = enabled;
+	pwm_get_state(st->spi_engine_trigger, &spi_trigger_state);
+	spi_trigger_state.enabled = enabled;
 
-		ret = pwm_apply_state(st->spi_engine_trigger, &spi_trigger_state);
-		if (ret < 0)
-			return ret;		
-	}
+	ret = pwm_apply_state(st->spi_engine_trigger, &spi_trigger_state);
+	if (ret < 0)
+		return ret;		
 
 	return 0;
 }
@@ -391,12 +391,19 @@ static int ad463x_set_conversion(struct ad463x_state *st, bool enabled)
 static int ad463x_get_avg_frame_len(struct iio_dev *dev,
 				    const struct iio_chan_spec *chan)
 {
-	unsigned int avg_len;
 	struct ad463x_state *st = iio_priv(dev);
+	unsigned int avg_len;
+	int ret;
 
-	ad463x_spi_read_reg(st, AD463X_REG_AVG, &avg_len);
+	if (st->phy.out_data_mode != AD463X_30_AVERAGED_DIFF) {
+		return 0;
+	} else {
+		ret = ad463x_spi_read_reg(st, AD463X_REG_AVG, &avg_len);
+		if (ret < 0)
+			return ret;
+	}
 
-	return (avg_len - 1);
+	return avg_len;
 }
 
 static int ad463x_set_avg_frame_len(struct iio_dev *dev,
@@ -406,14 +413,20 @@ static int ad463x_set_avg_frame_len(struct iio_dev *dev,
 	int ret;
 	struct ad463x_state *st = iio_priv(dev);
 
-	ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, AD463X_AVG_FILTER_RESET);
-	if (ret < 0)
-		return ret;
-	ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, (avg_len + 1));
+	if (st->phy.out_data_mode != AD463X_30_AVERAGED_DIFF || avg_len == 0)
+		return -EINVAL;
+
+	// ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, AD463X_AVG_FILTER_RESET);
+	// if (ret < 0)
+	// 	return ret;
+	
+	ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, avg_len);
 	if (ret < 0)
 		return ret;
 
-	return 0;
+	st->phy.num_avg_samples = 1 << avg_len;
+
+	return ad463x_set_sampling_freq(st, st->sampling_frequency);
 }
 
 static int ad463x_get_pwr_mode(struct iio_dev *dev,
@@ -466,6 +479,7 @@ static int ad463x_phy_init(struct ad463x_state *st)
 					   AD463X_AVG_LEN_DEFAULT);
 		if (ret < 0)
 			return ret;
+		st->phy.num_avg_samples = 64;
 	}
 
 	return 0;
@@ -700,7 +714,8 @@ static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
 	xfer.bits_per_word = AD463X_SPI_WIDTH(
 			st->phy.lane_mode,
 			ad463x_data_widths[st->phy.out_data_mode]);
-	if (st->phy.data_rate_mode == AD463X_DUAL_DATA_RATE)
+	
+	if (st->phy.data_rate_mode == AD463X_DUAL_DATA_RATE) 
 		xfer.bits_per_word /= 2;
 
 	ret = ad463x_set_reg_access(st, false);
@@ -774,28 +789,28 @@ static struct iio_chan_spec_ext_info ad463x_ext_info[] = {
 static const struct iio_chan_spec ad463x_channels[][5][4] = {
 	[ID_AD4630_24] = {
 		[AD463X_16_DIFF_8_COM] = {
-			AD4630_24_CHANNEL(0, 0, 32, 16, 8),
-			AD4630_24_CHANNEL(1, 0, 32, 8,  16),
-			AD4630_24_CHANNEL(2, 1, 32, 16, 8),
-			AD4630_24_CHANNEL(3, 1, 32, 8,  16),
+			AD4630_24_CHANNEL("differential_0",   0, 0, 32, 16, 8),
+			AD4630_24_CHANNEL("common_voltage_0", 1, 0, 32, 8,  0),
+			AD4630_24_CHANNEL("differential_1",   2, 1, 32, 16, 8),
+			AD4630_24_CHANNEL("common_voltage_1", 3, 1, 32, 8,  0),
 		},
 		[AD463X_24_DIFF] = {
-			AD4630_24_CHANNEL(0, 0, 32, 24, 0),
-			AD4630_24_CHANNEL(1, 1, 32, 24, 0),
+			AD4630_24_CHANNEL("differential_0", 0, 0, 32, 24, 0),
+			AD4630_24_CHANNEL("differential_1", 1, 1, 32, 24, 0),
 		},
 		[AD463X_24_DIFF_8_COM] = {
-			AD4630_24_CHANNEL(0, 0, 32, 24, 8),
-			AD4630_24_CHANNEL(1, 0, 32, 8,  24),
-			AD4630_24_CHANNEL(2, 1, 32, 24, 8),
-			AD4630_24_CHANNEL(3, 1, 32, 8,  24),
+			AD4630_24_CHANNEL("differential_0",   0, 0, 32, 24, 8),
+			AD4630_24_CHANNEL("common_voltage_0", 1, 0, 32, 8,  0),
+			AD4630_24_CHANNEL("differential_1",   2, 1, 32, 24, 8),
+			AD4630_24_CHANNEL("common_voltage_1", 3, 1, 32, 8,  0),
 		},
 		[AD463X_30_AVERAGED_DIFF] = {
-			AD4630_24_CHANNEL(0, 0, 32, 30, 0),
-			AD4630_24_CHANNEL(1, 1, 32, 30, 0),
+			AD4630_24_CHANNEL("differential_0", 0, 0, 32, 30, 0),
+			AD4630_24_CHANNEL("differential_1", 1, 1, 32, 30, 0),
 		},
 		[AD463X_32_PATTERN] = {
-			AD4630_24_CHANNEL(0, 0, 32, 32, 0),
-			AD4630_24_CHANNEL(1, 1, 32, 32, 0),
+			AD4630_24_CHANNEL("pattern_0", 0, 0, 32, 32, 0),
+			AD4630_24_CHANNEL("pattern_1", 1, 1, 32, 32, 0),
 		},
 	},
 };
@@ -864,6 +879,14 @@ static int ad463x_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 
+	st->spi_engine_trigger = devm_pwm_get(&spi->dev, "spi_trigger");
+	if (IS_ERR(st->spi_engine_trigger))
+		return PTR_ERR(st->spi_engine_trigger);
+
+	ret = devm_add_action_or_reset(&spi->dev,
+					ad463x_avg_trigger_disable,
+					st->spi_engine_trigger);
+
 	device_id = spi_get_device_id(st->spi)->driver_data;
 
 	indio_dev->dev.parent = &spi->dev;
@@ -877,17 +900,6 @@ static int ad463x_probe(struct spi_device *spi)
 		dev_err(&spi->dev, "%s invalid devicetree configuration\n",
 			indio_dev->name);
 		return -EINVAL;
-	}
-
-	if (st->phy.out_data_mode == AD463X_30_AVERAGED_DIFF) {
-		st->spi_engine_trigger = devm_pwm_get(&spi->dev, "spi_trigger");
-		if (IS_ERR(st->spi_engine_trigger))
-			return PTR_ERR(st->spi_engine_trigger);
-
-
-		ret = devm_add_action_or_reset(&spi->dev,
-					       ad463x_avg_trigger_disable,
-					       st->spi_engine_trigger);
 	}
 
 	indio_dev->channels =
