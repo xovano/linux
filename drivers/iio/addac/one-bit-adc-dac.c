@@ -21,6 +21,7 @@ struct one_bit_adc_dac_state {
 	struct platform_device  *pdev;
 	struct gpio_descs       *in_gpio_descs;
 	struct gpio_descs       *out_gpio_descs;
+	const char		**labels;
 };
 
 static int one_bit_adc_dac_read_raw(struct iio_dev *indio_dev,
@@ -65,9 +66,19 @@ static int one_bit_adc_dac_write_raw(struct iio_dev *indio_dev,
 	}
 }
 
+static int one_bit_adc_dac_read_label(struct iio_dev *indio_dev,
+			     const struct iio_chan_spec *chan,
+			     char *label)
+{
+	struct one_bit_adc_dac_state *st = iio_priv(indio_dev);
+
+	return sprintf(label, "%s\n", st->labels[chan->channel]);
+}
+
 static const struct iio_info one_bit_adc_dac_info = {
 	.read_raw = &one_bit_adc_dac_read_raw,
 	.write_raw = &one_bit_adc_dac_write_raw,
+	.read_label = &one_bit_adc_dac_read_label,
 };
 
 static int one_bit_adc_dac_set_ch(struct iio_chan_spec *channels,
@@ -87,15 +98,21 @@ static int one_bit_adc_dac_set_ch(struct iio_chan_spec *channels,
 	return 0;
 }
 
-static void one_bit_adc_dac_set_channel_label(struct device *device,
+static int one_bit_adc_dac_set_channel_label(struct iio_dev *indio_dev,
 						struct iio_chan_spec *channels,
 						int num_channels)
 {
+	struct one_bit_adc_dac_state *st = iio_priv(indio_dev);
+	struct device *device = indio_dev->dev.parent;
 	struct fwnode_handle *fwnode;
 	struct fwnode_handle *child;
-	struct iio_chan_spec *chan;
 	const char *label;
 	int crt_ch = 0;
+
+	st->labels = devm_kcalloc(indio_dev->dev.parent, num_channels,
+				sizeof(label), GFP_KERNEL);
+	if (!st->labels)
+		return -ENOMEM;
 
 	fwnode = dev_fwnode(device);
 	fwnode_for_each_child_node(fwnode, child) {
@@ -108,10 +125,10 @@ static void one_bit_adc_dac_set_channel_label(struct device *device,
 		if (fwnode_property_read_string(child, "label", &label))
 			continue;
 
-		chan = &channels[crt_ch];
-		chan->info_mask_separate |= BIT(IIO_CHAN_INFO_LABEL);
-		chan->label_name = label;
+		st->labels[crt_ch] = label;
 	}
+
+	return 0;
 }
 
 static int one_bit_adc_dac_parse_dt(struct iio_dev *indio_dev)
@@ -147,7 +164,7 @@ static int one_bit_adc_dac_parse_dt(struct iio_dev *indio_dev)
 	if (ret)
 		return ret;
 
-	one_bit_adc_dac_set_channel_label(indio_dev->dev.parent, channels, in_num_ch + out_num_ch);
+	one_bit_adc_dac_set_channel_label(indio_dev, channels, in_num_ch + out_num_ch);
 	indio_dev->channels = channels;
 	indio_dev->num_channels = in_num_ch + out_num_ch;
 

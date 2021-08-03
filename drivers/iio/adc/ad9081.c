@@ -215,6 +215,7 @@ struct ad9081_phy {
 
 	struct ad9081_debugfs_entry debugfs_entry[10];
 	u32 ad9081_debugfs_entry_index;
+	const char **labels;
 };
 
 static int ad9081_nco_sync_master_slave(struct ad9081_phy *phy, bool master)
@@ -1949,6 +1950,15 @@ static int ad9081_write_raw(struct iio_dev *indio_dev,
 	return 0;
 }
 
+static int ad9081_read_label(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan, char *label)
+{
+	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
+	struct ad9081_phy *phy = conv->phy;
+
+	return sprintf(label, "%s\n", phy->labels[chan->channel]);
+}
+
 static const char* const ffh_modes[] = {
 	"phase_continuous", "phase_incontinuous", "phase_coherent"
 };
@@ -3408,7 +3418,7 @@ static char* ad9081_lable_writer(struct ad9081_phy *phy, const struct iio_chan_s
 static int ad9081_setup_chip_info_tbl(struct ad9081_phy *phy,
 				      bool complex, bool buffer_capable)
 {
-	int i, c, m;
+	int i, c, m, num_labels;
 
 	m = phy->jesd_rx_link[0].jesd_param.jesd_m +
 	    phy->jesd_rx_link[1].jesd_param.jesd_m;
@@ -3424,6 +3434,13 @@ static int ad9081_setup_chip_info_tbl(struct ad9081_phy *phy,
 	default:
 		return -EINVAL;
 	}
+
+	num_labels = (m * phy->multidevice_instance_count);
+	num_labels += phy->jesd_tx_link.jesd_param.jesd_m *
+		      (phy->jesd_tx_link.jesd_param.jesd_duallink > 0 ? 2 : 1);
+	phy->labels = devm_kcalloc(&phy->spi->dev, num_labels, sizeof(char*), GFP_KERNEL);
+	if (!phy->labels)
+		return -ENOMEM;
 
 	for (c = 0, i = 0; i < (m * phy->multidevice_instance_count);
 		 i++, c++) {
@@ -3444,14 +3461,12 @@ static int ad9081_setup_chip_info_tbl(struct ad9081_phy *phy,
 		phy->chip_info.channel[c].scan_type.storagebits =
 			(phy->jesd_rx_link[0].jesd_param.jesd_np > 8) ? 16 : 8;
 		phy->chip_info.channel[c].scan_type.sign = 's';
-		phy->chip_info.channel[c].info_mask_separate |= BIT(IIO_CHAN_INFO_LABEL);
 
 		if (i < m) {
 			phy->chip_info.channel[c].ext_info = rxadc_ext_info;
-			phy->chip_info.channel[c].label_name =
-				ad9081_lable_writer(phy, &phy->chip_info.channel[c]);
+			phy->labels[c] = ad9081_lable_writer(phy, &phy->chip_info.channel[c]);
 		} else {
-			phy->chip_info.channel[c].label_name = "buffer_only";
+			phy->labels[c] = "buffer_only";
 		}
 	}
 
@@ -3471,11 +3486,10 @@ static int ad9081_setup_chip_info_tbl(struct ad9081_phy *phy,
 			BIT(IIO_CHAN_INFO_SAMP_FREQ);
 
 		phy->chip_info.channel[c].info_mask_separate =
-			BIT(IIO_CHAN_INFO_ENABLE) | BIT(IIO_CHAN_INFO_LABEL);
+			BIT(IIO_CHAN_INFO_ENABLE);
 
 		phy->chip_info.channel[c].ext_info = txdac_ext_info;
-		phy->chip_info.channel[c].label_name = ad9081_lable_writer(phy,
-			&phy->chip_info.channel[c]);
+		phy->labels[c] = ad9081_lable_writer(phy, &phy->chip_info.channel[c]);
 	}
 
 	phy->chip_info.channel[c].type = IIO_TEMP;
@@ -3494,6 +3508,7 @@ static int ad9081_setup_chip_info_tbl(struct ad9081_phy *phy,
 static const struct iio_info ad9081_iio_info = {
 	.read_raw = &ad9081_read_raw,
 	.write_raw = &ad9081_write_raw,
+	.read_label = &ad9081_read_label,
 	.debugfs_reg_access = &ad9081_reg_access,
 	.attrs = &ad9081_phy_attribute_group,
 };
