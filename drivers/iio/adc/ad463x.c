@@ -181,7 +181,7 @@ static const unsigned int ad463x_data_widths[] = {
 	[AD463X_16_DIFF_8_COM] = 24,
 	[AD463X_24_DIFF] = 24,
 	[AD463X_24_DIFF_8_COM] = 32,
-	[AD463X_30_AVERAGED_DIFF] = 30,
+	[AD463X_30_AVERAGED_DIFF] = 32,
 	[AD463X_32_PATTERN] = 32
 };
 
@@ -352,7 +352,7 @@ static int ad463x_set_sampling_freq(struct ad463x_state *st,
 
 	spi_trigger_state.duty_cycle = conversion_state.duty_cycle ;
 	spi_trigger_state.period = conversion_state.period;
-	spi_trigger_state.offset = 10;
+	spi_trigger_state.offset = 0;
 
 	if (st->phy.out_data_mode == AD463X_30_AVERAGED_DIFF)
 		spi_trigger_state.period *= st->phy.num_avg_samples;
@@ -416,17 +416,17 @@ static int ad463x_set_avg_frame_len(struct iio_dev *dev,
 	if (st->phy.out_data_mode != AD463X_30_AVERAGED_DIFF || avg_len == 0)
 		return -EINVAL;
 
-	// ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, AD463X_AVG_FILTER_RESET);
-	// if (ret < 0)
-	// 	return ret;
-	
-	ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, avg_len);
+	ret = ad463x_spi_write_reg(st, AD463X_REG_AVG, AD463X_AVG_FILTER_RESET);
 	if (ret < 0)
 		return ret;
 
 	st->phy.num_avg_samples = 1 << avg_len;
 
-	return ad463x_set_sampling_freq(st, st->sampling_frequency);
+	ret = ad463x_set_sampling_freq(st, st->sampling_frequency);
+	if (ret < 0)
+		return ret;
+
+	return ad463x_spi_write_reg(st, AD463X_REG_AVG, avg_len);
 }
 
 static int ad463x_get_pwr_mode(struct iio_dev *dev,
@@ -711,6 +711,12 @@ static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
 		.speed_hz = AD463X_SPI_SAMPLING_SPEED,
 	};
 
+	ret = ad463x_set_reg_access(st, false);
+	if (ret < 0)
+		return ret;
+
+	ad463x_set_conversion(st, true);
+
 	xfer.bits_per_word = AD463X_SPI_WIDTH(
 			st->phy.lane_mode,
 			ad463x_data_widths[st->phy.out_data_mode]);
@@ -718,17 +724,13 @@ static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
 	if (st->phy.data_rate_mode == AD463X_DUAL_DATA_RATE) 
 		xfer.bits_per_word /= 2;
 
-	ret = ad463x_set_reg_access(st, false);
-	if (ret < 0)
-		return ret;
-
 	spi_bus_lock(st->spi->master);
 	spi_message_init(&msg);
 	spi_message_add_tail(&xfer, &msg);
 	spi_engine_offload_load_msg(st->spi, &msg);
 	spi_engine_offload_enable(st->spi, true);
 
-	return ad463x_set_conversion(st, true);
+	return 0;
 }
 
 static int ad463x_buffer_postdisable(struct iio_dev *indio_dev)
@@ -805,8 +807,8 @@ static const struct iio_chan_spec ad463x_channels[][5][4] = {
 			AD4630_24_CHANNEL("common_voltage_1", 3, 1, 32, 8,  0),
 		},
 		[AD463X_30_AVERAGED_DIFF] = {
-			AD4630_24_CHANNEL("differential_0", 0, 0, 32, 30, 0),
-			AD4630_24_CHANNEL("differential_1", 1, 1, 32, 30, 0),
+			AD4630_24_CHANNEL("differential_0", 0, 0, 32, 30, 2),
+			AD4630_24_CHANNEL("differential_1", 1, 1, 32, 30, 2),
 		},
 		[AD463X_32_PATTERN] = {
 			AD4630_24_CHANNEL("pattern_0", 0, 0, 32, 32, 0),
