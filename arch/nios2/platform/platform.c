@@ -17,7 +17,7 @@
 #include <linux/io.h>
 #include <linux/clk-provider.h>
 
-static const __initconst struct of_device_id clk_match[] = {
+static const struct of_device_id clk_match[] __initconst = {
 	{ .compatible = "fixed-clock", .data = of_fixed_clk_setup, },
 	{}
 };

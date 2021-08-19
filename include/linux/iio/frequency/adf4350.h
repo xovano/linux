@@ -103,9 +103,6 @@
  * @r2_user_settings:	User defined settings for ADF4350/1 REGISTER_2.
  * @r3_user_settings:	User defined settings for ADF4350/1 REGISTER_3.
  * @r4_user_settings:	User defined settings for ADF4350/1 REGISTER_4.
- * @gpio_lock_detect:	Optional, if set with a valid GPIO number,
- *			pll lock state is tested upon read.
- *			If not used - set to -1.
  */
 
 struct adf4350_platform_data {

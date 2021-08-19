@@ -99,6 +99,8 @@ properties:
       If this property is present, then the phase detector polarity will be set
       to negative because of the positive tuning of the VCO.
 
+  spi-max-frequency: true
+
   '#address-cells':
     const: 1
 
@@ -107,12 +109,6 @@ properties:
 
   '#clock-cells':
     const: 1
-
-required:
-  - compatible
-  - reg
-  - clocks
-  - clock-names
 
   patternProperties:
   "^channel@[01]$":
@@ -143,6 +139,14 @@ required:
 
     required:
       - reg
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+
+additionalProperties: false
 
 examples:
   - |
