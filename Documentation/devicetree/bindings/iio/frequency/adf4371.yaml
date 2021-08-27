@@ -43,8 +43,8 @@ properties:
       property allows arbitrary scales. The first element in the array should
       be the multiplier and the second element should be the divider.
     allOf:
-      - $ref: /schemas/types.yaml#/definitions/uint32-array
-      - minimum: 1
+      $ref: /schemas/types.yaml#/definitions/uint32-array
+      minimum: 1
 
   adi,spi-3wire-enable:
     description:
@@ -110,7 +110,7 @@ properties:
   '#clock-cells':
     const: 1
 
-  patternProperties:
+patternProperties:
   "^channel@[01]$":
     type: object
     description: Represents the external channels which are connected to the device.

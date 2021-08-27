@@ -81,7 +81,6 @@ Optional properties:
 	It can contain any map needing a non-default address.
 	Possible maps names are : "main", "edid", "cec", "packet"
 
-
 Required nodes:
 
 The ADV7511 has two video ports. Their connections are modelled using the OF

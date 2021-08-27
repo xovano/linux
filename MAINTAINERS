@@ -977,6 +977,14 @@ F:	drivers/iio/dac/ad5696*
 ANALOG DEVICES INC AD5758 DRIVER
 M:	Stefan Popa <stefan.popa@analog.com>
 L:	linux-iio@vger.kernel.org
+W:	http://ez.analog.com/community/linux-device-drivers
+S:	Supported
+F:	drivers/iio/dac/ad5758.c
+F:	Documentation/devicetree/bindings/iio/dac/ad5758.txt
+
+AMS AS73211 DRIVER
+M:	Christian Eggers <ceggers@arri.de>
+L:	linux-iio@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/iio/light/ams,as73211.yaml
 F:	drivers/iio/light/as73211.c
@@ -986,16 +994,16 @@ M:	Mircea Caprioru <mircea.caprioru@analog.com>
 L:	linux-iio@vger.kernel.org
 W:	http://ez.analog.com/community/linux-device-drivers
 S:	Supported
+F:	Documentation/devicetree/bindings/iio/dac/adi,ad5770r.yaml
 F:	drivers/iio/dac/ad5770r.c
-F:	Documentation/devicetree/bindings/iio/dac/ad5770r.txt
 
 ANALOG DEVICES INC AD7124 DRIVER
 M:	Stefan Popa <stefan.popa@analog.com>
 L:	linux-iio@vger.kernel.org
 S:	Supported
 W:	http://ez.analog.com/community/linux-device-drivers
-F:	Documentation/devicetree/bindings/iio/adc/adi,ad7192.yaml
-F:	drivers/iio/adc/ad7192.c
+F:	Documentation/devicetree/bindings/iio/adc/adi,ad7124.yaml
+F:	drivers/iio/adc/ad7124.c
 
 ANALOG DEVICES INC AD7192 DRIVER
 M:	Alexandru Tachici <alexandru.tachici@analog.com>
@@ -1107,30 +1115,13 @@ W:	http://ez.analog.com/community/linux-device-drivers
 F:	Documentation/devicetree/bindings/hwmon/adi,adm1177.yaml
 F:	drivers/hwmon/adm1177.c
 
-ANALOG DEVICES INC ADIS16475 DRIVER
-M:	Nuno Sa <nuno.sa@analog.com>
-L:	linux-iio@vger.kernel.org
-W:	http://ez.analog.com/community/linux-device-drivers
-S:	Supported
-F:	drivers/iio/imu/adis16475.c
-F:	Documentation/devicetree/bindings/iio/imu/adi,adis16475.yaml
-
-ANALOG DEVICES INC ADM1177 DRIVER
-M:	Beniamin Bia <beniamin.bia@analog.com>
-M:	Michael Hennerich <Michael.Hennerich@analog.com>
-L:	linux-hwmon@vger.kernel.org
-W:	http://ez.analog.com/community/linux-device-drivers
-S:	Supported
-F:	drivers/hwmon/adm1177.c
-F:	Documentation/devicetree/bindings/hwmon/adi,adm1177.yaml
-
 ANALOG DEVICES INC ADP5061 DRIVER
 M:	Michael Hennerich <Michael.Hennerich@analog.com>
 L:	linux-pm@vger.kernel.org
 S:	Supported
 W:	http://ez.analog.com/community/linux-device-drivers
-F:	drivers/power/supply/adp5061.c
 F:	Documentation/devicetree/bindings/power/supply/adp5061.txt
+F:	drivers/power/supply/adp5061.c
 F:	Documentation/ABI/testing/sysfs-class-power-adp5061
 
 ANALOG DEVICES INC ADV7180 DRIVER

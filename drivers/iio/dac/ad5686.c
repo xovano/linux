@@ -627,8 +627,6 @@ int ad5686_probe(struct device *dev,
 
 	mutex_init(&st->lock);
 
-	mutex_init(&st->lock);
-
 	switch (st->chip_info->regmap_type) {
 	case AD5310_REGMAP:
 		cmd = AD5686_CMD_CONTROL_REG;

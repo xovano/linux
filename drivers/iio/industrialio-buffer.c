@@ -26,7 +26,6 @@
 #include "iio_core_trigger.h"
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
-#include <linux/iio/trigger.h>
 #include <linux/iio/buffer_impl.h>
 
 static const char * const iio_endian_prefix[] = {
@@ -169,6 +168,12 @@ static bool iio_buffer_space_available(struct iio_buffer *buf)
 	return true;
 }
 
+/**
+ * iio_buffer_chrdev_write() - chrdev read for buffer access
+ *
+ * This function relies on all buffer implementations having an
+ * iio_buffer as their first element.
+ **/
 ssize_t iio_buffer_chrdev_write(struct file *filp, const char __user *buf,
 				      size_t n, loff_t *f_ps)
 {

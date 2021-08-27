@@ -28,7 +28,6 @@
 
 #pragma GCC diagnostic warning "-Warray-bounds"
 
-static unsigned long register_address;
 /* Max HashMap Order for PM API feature check (1<<7 = 128) */
 #define PM_API_FEATURE_CHECK_MAX_ORDER  7
 

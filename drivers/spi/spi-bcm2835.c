@@ -1084,7 +1084,7 @@ static int bcm2835_spi_transfer_one(struct spi_controller *ctlr,
 				    struct spi_transfer *tfr)
 {
 	struct bcm2835_spi *bs = spi_controller_get_devdata(ctlr);
-	unsigned long spi_hz, clk_hz, cdiv;
+	unsigned long spi_hz, cdiv;
 	unsigned long hz_per_byte, byte_limit;
 	u32 cs = bs->prepare_cs[spi->chip_select];
 
@@ -1103,7 +1103,7 @@ static int bcm2835_spi_transfer_one(struct spi_controller *ctlr,
 	} else {
 		cdiv = 0; /* 0 is the slowest we can go */
 	}
-	tfr->effective_speed_hz = cdiv ? (clk_hz / cdiv) : (clk_hz / 65536);
+	tfr->effective_speed_hz = cdiv ? (bs->clk_hz / cdiv) : (bs->clk_hz / 65536);
 	bcm2835_wr(bs, BCM2835_SPI_CLK, cdiv);
 
 	/* handle all the 3-wire mode */

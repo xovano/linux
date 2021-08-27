@@ -40,7 +40,7 @@ enum pwm_polarity {
  * current PWM hardware state.
  */
 struct pwm_args {
-	unsigned int period;
+	u64 period;
 	unsigned int offset;
 	enum pwm_polarity polarity;
 };

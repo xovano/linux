@@ -27,7 +27,6 @@ static int __init nios2_soc_device_init(void)
 	struct soc_device *soc_dev;
 	struct soc_device_attribute *soc_dev_attr;
 	const char *machine;
-	int ret;
 
 	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
 	if (soc_dev_attr) {

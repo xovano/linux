@@ -31,6 +31,7 @@ obj-$(CONFIG_AD7793) += ad7793.o
 obj-$(CONFIG_AD7887) += ad7887.o
 obj-$(CONFIG_AD7949) += ad7949.o
 obj-$(CONFIG_AD799X) += ad799x.o
+obj-$(CONFIG_ADI_AXI_ADC) += adi-axi-adc.o
 obj-$(CONFIG_AD9963) += ad9963.o
 obj-$(CONFIG_ADM1177) += adm1177.o
 
@@ -95,7 +96,6 @@ obj-$(CONFIG_CF_AXI_TDD) += cf_axi_tdd.o
 obj-$(CONFIG_AXI_PULSE_CAPTURE) += axi_pulse_capture.o
 obj-$(CONFIG_AXI_FMCADC5_SYNC) += axi_fmcadc5_sync.o
 
-obj-$(CONFIG_ADI_AXI_ADC) += adi-axi-adc.o
 obj-$(CONFIG_ASPEED_ADC) += aspeed_adc.o
 obj-$(CONFIG_AT91_ADC) += at91_adc.o
 obj-$(CONFIG_AT91_SAMA5D2_ADC) += at91-sama5d2_adc.o

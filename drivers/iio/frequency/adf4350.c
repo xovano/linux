@@ -14,9 +14,9 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/gcd.h>
+#include <linux/gpio/consumer.h>
 #include <asm/div64.h>
 #include <linux/clk.h>
-#include <linux/gpio/consumer.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -508,7 +508,6 @@ static int adf4350_probe(struct spi_device *spi)
 	st->spi = spi;
 	st->pdata = pdata;
 
-	indio_dev->dev.parent = &spi->dev;
 
 	if (spi->dev.of_node)
 		indio_dev->name = spi->dev.of_node->name;
@@ -550,7 +549,7 @@ static int adf4350_probe(struct spi_device *spi)
 			st->regs[ADF4350_REG2] = ADF4350_REG2_MUXOUT((i & 1) ?
 				ADF4350_MUXOUT_DVDD : ADF4350_MUXOUT_GND);
 			adf4350_sync_config(st, false);
-			ret = gpiod_get_value(st->pdata->gpio_lock_detect);
+			ret = gpiod_get_value(st->lock_detect_gpiod);
 			if (ret != ((i & 1) ? 1 : 0)) {
 				ret = -ENODEV;
 				dev_err(&spi->dev, "Probe failed (muxout)");

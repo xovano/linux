@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 
 #include <linux/iio/iio.h>
-#include <linux/iio/buffer.h>
 #include <linux/iio/trigger.h>
 #include "iio_core.h"
 #include "iio_core_trigger.h"
