@@ -724,6 +724,7 @@ static int ad463x_buffer_preenable(struct iio_dev *indio_dev)
 	if (st->phy.data_rate_mode == AD463X_DUAL_DATA_RATE) 
 		xfer.bits_per_word /= 2;
 
+	pr_err("\n bits per word %d",xfer.bits_per_word);
 	spi_bus_lock(st->spi->master);
 	spi_message_init(&msg);
 	spi_message_add_tail(&xfer, &msg);
