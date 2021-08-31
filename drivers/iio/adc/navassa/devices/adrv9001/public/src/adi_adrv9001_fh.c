@@ -17,6 +17,7 @@
 #include "adi_adrv9001_hal.h"
 #include "adi_adrv9001_radio.h"
 #include "adi_adrv9001_rx_types.h"
+#include "adi_adrv9001_tx_types.h"
 #include "adrv9001_bf.h"
 #include "adi_adrv9001_spi.h"
 #include "adi_adrv9001_user.h"
@@ -41,7 +42,6 @@
                                                       FREQ_HOPPING_TX_ATTEN_TABLE_NUM_BYTES +\
                                                       FREQ_HOPPING_CONFIGURATION_NUM_BYTES)
 #define FREQ_HOPPING_MAX_NUM_BYTES                   1024u
-#define FREQ_HOPPING_MAX_TX_FE_POWERON_FRAME_DELAY   64u
 #define FREQ_HOPPING_HOP_TABLE_PARTITION_ADDR_OFFSET 16u
 
 #define ADI_FH_CHECK_FH_ENABLED(device) \
@@ -55,10 +55,6 @@ if (device->devStateInfo.frequencyHoppingEnabled == 0) \
                      "Frequency hopping not enabled in device profile"); \
     ADI_API_RETURN(device); \
 }
-
-/* TODO JP: Consider making the definitions for attenuation settings a #def in tx_types.h */
-static const uint16_t NORMAL_MAX_ATTENUATION_MDB        = 41950;
-static const uint16_t NORMAL_ATTENUATION_RESOLUTION_MDB = 50;
 
 /*  TODO JP: Determine if we need to validate the whole table.
     It's difficult to validate the hop table due to the following:
@@ -185,7 +181,7 @@ static __maybe_unused int32_t adi_adrv9001_fh_Configure_Validate(adi_adrv9001_De
     }
 
     /* Check txAnalogPowerOnFrameDelay is within range */
-    ADI_RANGE_CHECK(adrv9001, fhConfig->txAnalogPowerOnFrameDelay, 0, FREQ_HOPPING_MAX_TX_FE_POWERON_FRAME_DELAY);
+    ADI_RANGE_CHECK(adrv9001, fhConfig->txAnalogPowerOnFrameDelay, 0, ADI_ADRV9001_FH_MAX_TX_FE_POWERON_FRAME_DELAY);
     /* Ensure tx analog power on delay is zero if Rx is enabled */
     if ((ADRV9001_BF_EQUAL(initializedChannelMask, rxChannelMask))
       &&(fhConfig->txAnalogPowerOnFrameDelay > 0))
@@ -234,9 +230,9 @@ static __maybe_unused int32_t adi_adrv9001_fh_Configure_Validate(adi_adrv9001_De
              Will min/max be the same, or will we need a seperate field?
     */
     ADI_RANGE_CHECK(adrv9001, fhConfig->minTxAtten_mdB, 0, fhConfig->maxTxAtten_mdB);
-    ADI_RANGE_CHECK(adrv9001, fhConfig->maxTxAtten_mdB, fhConfig->minTxAtten_mdB, NORMAL_MAX_ATTENUATION_MDB);
+    ADI_RANGE_CHECK(adrv9001, fhConfig->maxTxAtten_mdB, fhConfig->minTxAtten_mdB, ADRV9001_TX_MAX_ATTENUATION_MDB);
 
-    if (fhConfig->minTxAtten_mdB % NORMAL_ATTENUATION_RESOLUTION_MDB != 0)
+    if (fhConfig->minTxAtten_mdB % ADRV9001_TX_ATTENUATION_RESOLUTION_MDB != 0)
     {
         ADI_ERROR_REPORT(&adrv9001->common,
                          ADI_COMMON_ERRSRC_API,
@@ -246,7 +242,7 @@ static __maybe_unused int32_t adi_adrv9001_fh_Configure_Validate(adi_adrv9001_De
                          "Invalid attenuation_mdB value. The resolution of adi_adrv9001_Tx_Attenuation_Set() is only 0.05dB");
     }
 
-    if (fhConfig->maxTxAtten_mdB % NORMAL_ATTENUATION_RESOLUTION_MDB != 0)
+    if (fhConfig->maxTxAtten_mdB % ADRV9001_TX_ATTENUATION_RESOLUTION_MDB != 0)
     {
         ADI_ERROR_REPORT(&adrv9001->common,
                          ADI_COMMON_ERRSRC_API,
@@ -604,9 +600,15 @@ int32_t adi_adrv9001_fh_Configuration_Inspect(adi_adrv9001_Device_t *adrv9001, a
         }
         /* Configure ADRV9001 GPIOs */
         gainSelectPinSignal = ADI_ADRV9001_GPIO_SIGNAL_FH_GAIN_SEL_0;
+        fhConfig->gainSetupByPinConfig.numGainCtrlPins = ADI_ADRV9001_FH_MAX_NUM_GAIN_SELECT_PINS;
         for (i = 0; i < ADI_ADRV9001_FH_MAX_NUM_GAIN_SELECT_PINS; i++)
         {
             ADI_EXPECT(adi_adrv9001_gpio_Inspect, adrv9001, (gainSelectPinSignal + i), &(fhConfig->gainSetupByPinConfig.gainSelectGpioConfig[i]));
+            if (fhConfig->gainSetupByPinConfig.gainSelectGpioConfig[i].pin == ADI_ADRV9001_GPIO_UNASSIGNED)
+            {
+                fhConfig->gainSetupByPinConfig.numGainCtrlPins = i;
+                break;
+            }
         }
     }
 
@@ -616,16 +618,22 @@ int32_t adi_adrv9001_fh_Configuration_Inspect(adi_adrv9001_Device_t *adrv9001, a
     if (fhConfig->mode == ADI_ADRV9001_FHMODE_LO_RETUNE_REALTIME_PROCESS_DUAL_HOP)
     {
         ADI_EXPECT(adi_adrv9001_gpio_Inspect, adrv9001, ADI_ADRV9001_GPIO_SIGNAL_FH_HOP_2, &(fhConfig->hopSignalGpioConfig[1]));
-        ADI_EXPECT(adi_adrv9001_gpio_Inspect, adrv9001, ADI_ADRV9001_GPIO_SIGNAL_FH_HOP_2_TABLE_SELECT, &(fhConfig->hopTableSelectConfig.hopTableSelectGpioConfig[0]));
+        ADI_EXPECT(adi_adrv9001_gpio_Inspect, adrv9001, ADI_ADRV9001_GPIO_SIGNAL_FH_HOP_2_TABLE_SELECT, &(fhConfig->hopTableSelectConfig.hopTableSelectGpioConfig[1]));
     }
 
     /* Configure table index pins if selected */
     if (fhConfig->tableIndexCtrl == ADI_ADRV9001_TABLEINDEXCTRL_GPIO)
     {
         frequencySelectPinSignal = ADI_ADRV9001_GPIO_SIGNAL_FH_TABLE_INDEX_0;
+        fhConfig->numTableIndexPins = ADI_ADRV9001_FH_MAX_NUM_FREQ_SELECT_PINS;
         for (i = 0; i < ADI_ADRV9001_FH_MAX_NUM_FREQ_SELECT_PINS; i++)
         {
             ADI_EXPECT(adi_adrv9001_gpio_Inspect, adrv9001, (frequencySelectPinSignal + i), &(fhConfig->tableIndexGpioConfig[i]));
+            if (fhConfig->tableIndexGpioConfig[i].pin == ADI_ADRV9001_GPIO_UNASSIGNED)
+            {
+                fhConfig->numTableIndexPins = i;
+                break;
+            }
         }
     }
 

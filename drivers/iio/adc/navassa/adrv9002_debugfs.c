@@ -10,8 +10,14 @@
 #include <linux/kernel.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
+#include <linux/stringify.h>
+#include "linux/spi/spi.h"
 
 #include "adrv9002.h"
+#include "adi_adrv9001_fh.h"
+#include "adi_adrv9001_fh_types.h"
+#include "adi_adrv9001_gpio.h"
+#include "adi_adrv9001_gpio_types.h"
 #include "adi_adrv9001_radio.h"
 #include "adi_adrv9001_rx.h"
 #include "adi_adrv9001_rxSettings_types.h"
@@ -883,6 +889,391 @@ static const struct file_operations adrv9002_api_version_get_fops = {
 	.read = adrv9002_api_version_get,
 	.llseek = default_llseek,
 };
+static const char * const dgpio_str[] = {
+	"Unassigned", "dgpio0", "dgpio1", "dgpio2", "dgpio3", "dgpio4", "dgpio5",
+	"dgpio6", "dgpio7", "dgpio8", "dgpio9", "dgpio10", "dgpio11", "dgpio12", "dgpio13",
+	"dgpio14", "dgpio15"
+};
+
+static void adrv9002_fh_gain_config_dump_show(struct seq_file *s, const adi_adrv9001_FhCfg_t *cfg)
+{
+	const adi_adrv9001_FhGainSetupByPinCfg_t *gain = &cfg->gainSetupByPinConfig;
+	int e;
+
+	adrv9002_seq_printf(s, &cfg->gainSetupByPinConfig, numRxGainTableEntries);
+	seq_puts(s, "RX Gain Table: ");
+	for (e = 0; e < gain->numRxGainTableEntries; e++)
+		seq_printf(s, "%u ", gain->rxGainTable[e]);
+	seq_puts(s, "\n");
+
+	adrv9002_seq_printf(s, &cfg->gainSetupByPinConfig, numTxAttenTableEntries);
+	seq_puts(s, "TX Atten Table: ");
+	for (e = 0; e < gain->numTxAttenTableEntries; e++)
+		seq_printf(s, "%u ", gain->txAttenTable[e]);
+	seq_puts(s, "\n");
+
+	adrv9002_seq_printf(s, &cfg->gainSetupByPinConfig, numGainCtrlPins);
+	seq_puts(s, "Gain Select Pins: ");
+	for (e = 0; e < gain->numGainCtrlPins; e++)
+		seq_printf(s, "%s ", dgpio_str[gain->gainSelectGpioConfig[e].pin]);
+	seq_puts(s, "\n");
+}
+
+static int adrv9002_fh_config_dump_show(struct seq_file *s, void *ignored)
+{
+	struct adrv9002_rf_phy *phy = s->private;
+	adi_adrv9001_FhCfg_t cfg = {0};
+	int ret, p;
+
+	mutex_lock(&phy->lock);
+	ret = adi_adrv9001_fh_Configuration_Inspect(phy->adrv9001, &cfg);
+	mutex_unlock(&phy->lock);
+	if (ret)
+		return adrv9002_dev_err(phy);
+
+	adrv9002_seq_printf(s, &cfg, mode);
+	seq_printf(s, "RX1 Hop Signal: %d\n", cfg.rxPortHopSignals[0]);
+	seq_printf(s, "RX2 Hop Signal: %d\n", cfg.rxPortHopSignals[1]);
+	seq_printf(s, "TX1 Hop Signal: %d\n", cfg.txPortHopSignals[0]);
+	seq_printf(s, "TX2 Hop Signal: %d\n", cfg.txPortHopSignals[1]);
+	adrv9002_seq_printf(s, &cfg, rxZeroIfEnable);
+	seq_printf(s, "Hop Signal 1 pin: %s\n", dgpio_str[cfg.hopSignalGpioConfig[0].pin]);
+	seq_printf(s, "Hop Signal 2 pin: %s\n", dgpio_str[cfg.hopSignalGpioConfig[1].pin]);
+	adrv9002_seq_printf(s, &cfg.hopTableSelectConfig, hopTableSelectMode);
+	seq_printf(s, "Hop Signal 1 table select pin: %s\n",
+		   dgpio_str[cfg.hopTableSelectConfig.hopTableSelectGpioConfig[0].pin]);
+	seq_printf(s, "Hop Signal 2 table select pin: %s\n",
+		   dgpio_str[cfg.hopTableSelectConfig.hopTableSelectGpioConfig[1].pin]);
+	adrv9002_seq_printf(s, &cfg, minRxGainIndex);
+	adrv9002_seq_printf(s, &cfg, maxRxGainIndex);
+	adrv9002_seq_printf(s, &cfg, minTxAtten_mdB);
+	adrv9002_seq_printf(s, &cfg, maxTxAtten_mdB);
+	seq_printf(s, "minOperatingFrequency_Hz: %llu\n", cfg.minOperatingFrequency_Hz);
+	seq_printf(s, "maxOperatingFrequency_Hz: %llu\n", cfg.maxOperatingFrequency_Hz);
+	adrv9002_seq_printf(s, &cfg, minFrameDuration_us);
+	adrv9002_seq_printf(s, &cfg, txAnalogPowerOnFrameDelay);
+	adrv9002_seq_printf(s, &cfg, tableIndexCtrl);
+	adrv9002_seq_printf(s, &cfg, numTableIndexPins);
+	if (cfg.numTableIndexPins)
+		seq_puts(s, "Table Index Control Pins: ");
+	for (p = 0; p < cfg.numTableIndexPins; p++)
+		seq_printf(s, "%s ", dgpio_str[cfg.tableIndexGpioConfig[p].pin]);
+	if (cfg.numTableIndexPins)
+		seq_puts(s, "\n");
+	adrv9002_seq_printf(s, &cfg, gainSetupByPin);
+	if (cfg.gainSetupByPin)
+		adrv9002_fh_gain_config_dump_show(s, &cfg);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(adrv9002_fh_config_dump);
+
+static int adrv9002_hop_table_dump_show(struct seq_file *s, int hop, int tbl_idx)
+{
+	struct adrv9002_rf_phy *phy = s->private;
+	/* static as it would be to big to have it on the stack */
+	static adi_adrv9001_FhHopFrame_t tbl[ADI_ADRV9001_FH_MAX_HOP_TABLE_SIZE];
+	u32 read_back = 0, e;
+	int ret;
+
+	mutex_lock(&phy->lock);
+	memset(&tbl, 0, sizeof(tbl));
+	ret = adi_adrv9001_fh_HopTable_Inspect(phy->adrv9001, hop, tbl_idx, tbl,
+					       ARRAY_SIZE(tbl), &read_back);
+	if (ret) {
+		mutex_unlock(&phy->lock);
+		return adrv9002_dev_err(phy);
+	}
+
+	if (read_back)
+		seq_puts(s, "hop_freq_hz rx1_off_freq_hz rx2_off_freq_hz rx_gain tx_atten\n");
+	for (e = 0; e < read_back; e++) {
+		seq_printf(s, "%-11llu %-15d %-15d %-7u %u\n", tbl[e].hopFrequencyHz,
+			   tbl[e].rx1OffsetFrequencyHz, tbl[e].rx2OffsetFrequencyHz,
+			   tbl[e].rxGainIndex, tbl[e].txAttenuation_mdB);
+	}
+
+	mutex_unlock(&phy->lock);
+	return 0;
+}
+
+#define ADRV9002_FH_TABLE_ATTR_SHOW(h, t, hop, table)						\
+static int adrv9002_hop##h##_table_##t##_dump_show(struct seq_file *s, void *ignored)		\
+{												\
+	return adrv9002_hop_table_dump_show(s, hop, table);					\
+}												\
+DEFINE_SHOW_ATTRIBUTE(adrv9002_hop##h##_table_##t##_dump)
+
+ADRV9002_FH_TABLE_ATTR_SHOW(1, a, ADI_ADRV9001_FH_HOP_SIGNAL_1, ADI_ADRV9001_FHHOPTABLE_A);
+ADRV9002_FH_TABLE_ATTR_SHOW(1, b, ADI_ADRV9001_FH_HOP_SIGNAL_1, ADI_ADRV9001_FHHOPTABLE_B);
+ADRV9002_FH_TABLE_ATTR_SHOW(2, a, ADI_ADRV9001_FH_HOP_SIGNAL_2, ADI_ADRV9001_FHHOPTABLE_A);
+ADRV9002_FH_TABLE_ATTR_SHOW(2, b, ADI_ADRV9001_FH_HOP_SIGNAL_2, ADI_ADRV9001_FHHOPTABLE_B);
+
+static void adrv9002_debugfs_fh_config_create(struct adrv9002_rf_phy *phy, struct dentry *d)
+{
+	int hop, p;
+	char attr[64];
+	const struct {
+		const struct file_operations *fops_a;
+		const struct file_operations *fops_b;
+	} hop_tbl_helper[ADRV9002_FH_HOP_SIGNALS_NR] = {
+		{ &adrv9002_hop1_table_a_dump_fops, &adrv9002_hop1_table_b_dump_fops },
+		{ &adrv9002_hop2_table_a_dump_fops, &adrv9002_hop2_table_b_dump_fops }
+	};
+
+	debugfs_create_u8("fh_min_rx_gain", 0600, d, &phy->fh.minRxGainIndex);
+	debugfs_create_u8("fh_max_rx_gain", 0600, d, &phy->fh.maxRxGainIndex);
+	debugfs_create_u8("fh_tx_analog_power_on_frame_delay", 0600, d,
+			  &phy->fh.txAnalogPowerOnFrameDelay);
+	debugfs_create_bool("fh_rx_zero_if_en", 0600, d, &phy->fh.rxZeroIfEnable);
+	debugfs_create_u16("fh_min_tx_atten_mdb", 0600, d, &phy->fh.minTxAtten_mdB);
+	debugfs_create_u16("fh_max_tx_atten_mdb", 0600, d, &phy->fh.maxTxAtten_mdB);
+	debugfs_create_u32("fh_mode", 0600, d, &phy->fh.mode);
+	debugfs_create_u32("fh_min_frame_duration_us", 0600, d, &phy->fh.minFrameDuration_us);
+	debugfs_create_u64("fh_min_lo_freq_hz", 0600, d, &phy->fh.minOperatingFrequency_Hz);
+	debugfs_create_u64("fh_max_lo_freq_hz", 0600, d, &phy->fh.maxOperatingFrequency_Hz);
+	/* table index control attrs */
+	debugfs_create_u32("fh_table_index_control_mode", 0600, d, &phy->fh.tableIndexCtrl);
+	debugfs_create_u8("fh_table_index_control_npins", 0600, d, &phy->fh.numTableIndexPins);
+	for (p = 0; p < ARRAY_SIZE(phy->fh.tableIndexGpioConfig); p++) {
+		sprintf(attr, "fh_table_index_control_pin%d", p + 1);
+		debugfs_create_u32(attr, 0600, d, &phy->fh.tableIndexGpioConfig[p].pin);
+	}
+	/* hop signals attrs */
+	debugfs_create_u32("fh_hop_table_mode_select", 0600, d,
+			   &phy->fh.hopTableSelectConfig.hopTableSelectMode);
+	for (hop = 0; hop < ADRV9002_FH_HOP_SIGNALS_NR; hop++) {
+		adi_adrv9001_FhhopTableSelectCfg_t *tbl = &phy->fh.hopTableSelectConfig;
+
+		sprintf(attr, "fh_hop%d_pin_set", hop + 1);
+		debugfs_create_u32(attr, 0600, d, &phy->fh.hopSignalGpioConfig[hop].pin);
+		sprintf(attr, "fh_hop%d_table_select_pin_set", hop + 1);
+		debugfs_create_u32(attr, 0600, d, &tbl->hopTableSelectGpioConfig[hop].pin);
+		sprintf(attr, "fh_hop%d_table_a_dump", hop + 1);
+		debugfs_create_file(attr, 0400, d, phy, hop_tbl_helper[hop].fops_a);
+		sprintf(attr, "fh_hop%d_table_b_dump", hop + 1);
+		debugfs_create_file(attr, 0400, d, phy, hop_tbl_helper[hop].fops_b);
+	}
+
+	for (p = 0; p < ADI_ADRV9001_NUM_CHANNELS; p++) {
+		sprintf(attr, "fh_rx%d_port_hop_signal", p);
+		debugfs_create_u32(attr, 0600, d, &phy->fh.rxPortHopSignals[p]);
+		sprintf(attr, "fh_tx%d_port_hop_signal", p);
+		debugfs_create_u32(attr, 0600, d, &phy->fh.txPortHopSignals[p]);
+	}
+
+	debugfs_create_file("fh_config_dump", 0400, d, phy, &adrv9002_fh_config_dump_fops);
+}
+
+/* does not take into account that idx 0 is ADI_ADRV9001_GPIO_UNASSIGNED */
+#define ADRV9002_GPIO_MAX	ADI_ADRV9001_GPIO_ANALOG_11
+
+static int adrv9002_gpio_val_get(void *arg, u64 *val, int gpio)
+{
+	struct adrv9002_rf_phy *phy = arg;
+	adi_adrv9001_GpioPinDirection_e dir;
+	adi_adrv9001_GpioPinLevel_e level;
+	int ret;
+
+	mutex_lock(&phy->lock);
+	ret = adi_adrv9001_gpio_PinDirection_Get(phy->adrv9001, gpio, &dir);
+	if (ret)
+		goto unlock;
+
+	if (dir)
+		ret = adi_adrv9001_gpio_OutputPinLevel_Get(phy->adrv9001, gpio, &level);
+	else
+		ret = adi_adrv9001_gpio_InputPinLevel_Get(phy->adrv9001, gpio, &level);
+	if (ret)
+		goto unlock;
+
+	*val = level;
+unlock:
+	mutex_unlock(&phy->lock);
+	return ret ? adrv9002_dev_err(phy) : 0;
+}
+
+static int adrv9002_gpio_val_set(void *arg, const u64 val, int gpio)
+{
+	struct adrv9002_rf_phy *phy = arg;
+	adi_adrv9001_GpioPinDirection_e dir;
+	int ret;
+
+	mutex_lock(&phy->lock);
+	ret = adi_adrv9001_gpio_PinDirection_Get(phy->adrv9001, gpio, &dir);
+	if (ret) {
+		mutex_unlock(&phy->lock);
+		return adrv9002_dev_err(phy);
+	}
+
+	if (dir == ADI_ADRV9001_GPIO_PIN_DIRECTION_INPUT) {
+		mutex_unlock(&phy->lock);
+		return -EPERM;
+	}
+
+	ret = adi_adrv9001_gpio_OutputPinLevel_Set(phy->adrv9001, gpio, !!val);
+	mutex_unlock(&phy->lock);
+	if (ret)
+		return adrv9002_dev_err(phy);
+
+	return 0;
+}
+
+static int adrv9002_gpio_dir_get(void *arg, u64 *val, int gpio)
+{
+	struct adrv9002_rf_phy *phy = arg;
+	adi_adrv9001_GpioPinDirection_e dir;
+	int ret;
+
+	mutex_lock(&phy->lock);
+	ret = adi_adrv9001_gpio_PinDirection_Get(phy->adrv9001, gpio, &dir);
+	mutex_unlock(&phy->lock);
+	if (ret)
+		return adrv9002_dev_err(phy);
+
+	*val = dir;
+
+	return 0;
+}
+
+static int (*dir_set[4])(adi_adrv9001_Device_t *adrv9001, u32 pin) = {
+	adi_adrv9001_gpio_ManualInput_Configure,
+	adi_adrv9001_gpio_ManualAnalogInput_Configure,
+	adi_adrv9001_gpio_ManualOutput_Configure,
+	adi_adrv9001_gpio_ManualAnalogOutput_Configure,
+};
+
+static int adrv9002_gpio_dir_set(void *arg, const u64 val, int gpio)
+{
+	struct adrv9002_rf_phy *phy = arg;
+	bool agpio = (gpio > ADI_ADRV9001_GPIO_DIGITAL_15) ? true : false;
+	int ret;
+
+	if (val && agpio)
+		/* the nibbles go 4 by 4 and 0 means unassigned. hence the +1 */
+		gpio = (gpio - ADI_ADRV9001_GPIO_ANALOG_00) / 4 + 1;
+	else if (val && !agpio)
+		/* for dgpio's, the crumbs go 2 by 2 */
+		gpio = (gpio - ADI_ADRV9001_GPIO_DIGITAL_00) / 2 + 1;
+
+	mutex_lock(&phy->lock);
+	ret = dir_set[2 * !!val + agpio](phy->adrv9001, gpio);
+	mutex_unlock(&phy->lock);
+	if (ret)
+		return adrv9002_dev_err(phy);
+
+	return 0;
+}
+
+#define gpio_idx(t, i)	\
+	(strcmp(__stringify(t), "a") ? (i) + ADI_ADRV9001_GPIO_DIGITAL_00 : \
+				(i) + ADI_ADRV9001_GPIO_ANALOG_00)
+
+#define gpio_fops(t, i, v)		(&adrv9002_##t##gpio##i##_##v##_fops)
+
+#define ADRV9002_GPIO_ATTR(t, i)						\
+static int adrv9002_##t##gpio##i##_val_get(void *arg, u64 *val)			\
+{										\
+	return adrv9002_gpio_val_get(arg, val, gpio_idx(t, i));			\
+}										\
+										\
+static int adrv9002_##t##gpio##i##_val_set(void *arg, const u64 val)		\
+{										\
+	return adrv9002_gpio_val_set(arg, val, gpio_idx(t, i));			\
+}										\
+DEFINE_DEBUGFS_ATTRIBUTE(adrv9002_##t##gpio##i##_val_fops,			\
+			 adrv9002_##t##gpio##i##_val_get,			\
+			 adrv9002_##t##gpio##i##_val_set, "%llu\n");		\
+										\
+										\
+static int adrv9002_##t##gpio##i##_dir_get(void *arg, u64 *val)			\
+{										\
+	return adrv9002_gpio_dir_get(arg, val, gpio_idx(t, i));			\
+}										\
+										\
+static int adrv9002_##t##gpio##i##_dir_set(void *arg, const u64 val)		\
+{										\
+	return adrv9002_gpio_dir_set(arg, val, gpio_idx(t, i));			\
+}										\
+DEFINE_DEBUGFS_ATTRIBUTE(adrv9002_##t##gpio##i##_dir_fops,			\
+			 adrv9002_##t##gpio##i##_dir_get,			\
+			 adrv9002_##t##gpio##i##_dir_set, "%llu\n")
+/* agpio's */
+ADRV9002_GPIO_ATTR(a, 0);
+ADRV9002_GPIO_ATTR(a, 1);
+ADRV9002_GPIO_ATTR(a, 2);
+ADRV9002_GPIO_ATTR(a, 3);
+ADRV9002_GPIO_ATTR(a, 4);
+ADRV9002_GPIO_ATTR(a, 5);
+ADRV9002_GPIO_ATTR(a, 6);
+ADRV9002_GPIO_ATTR(a, 7);
+ADRV9002_GPIO_ATTR(a, 8);
+ADRV9002_GPIO_ATTR(a, 9);
+ADRV9002_GPIO_ATTR(a, 10);
+ADRV9002_GPIO_ATTR(a, 11);
+/* dgpio's */
+ADRV9002_GPIO_ATTR(d, 0);
+ADRV9002_GPIO_ATTR(d, 1);
+ADRV9002_GPIO_ATTR(d, 2);
+ADRV9002_GPIO_ATTR(d, 3);
+ADRV9002_GPIO_ATTR(d, 4);
+ADRV9002_GPIO_ATTR(d, 5);
+ADRV9002_GPIO_ATTR(d, 6);
+ADRV9002_GPIO_ATTR(d, 7);
+ADRV9002_GPIO_ATTR(d, 8);
+ADRV9002_GPIO_ATTR(d, 9);
+ADRV9002_GPIO_ATTR(d, 10);
+ADRV9002_GPIO_ATTR(d, 11);
+ADRV9002_GPIO_ATTR(d, 12);
+ADRV9002_GPIO_ATTR(d, 13);
+ADRV9002_GPIO_ATTR(d, 14);
+ADRV9002_GPIO_ATTR(d, 15);
+
+static const struct {
+	const char *v;
+	const char *d;
+	const struct file_operations *fops_l;
+	const struct file_operations *fops_d;
+} gpio_helper[ADRV9002_GPIO_MAX] = {
+	{ "dgpio0_value", "dgpio0_direction", gpio_fops(d, 0, val), gpio_fops(d, 0, dir) },
+	{ "dgpio1_value", "dgpio1_direction", gpio_fops(d, 1, val), gpio_fops(d, 1, dir) },
+	{ "dgpio2_value", "dgpio2_direction", gpio_fops(d, 2, val), gpio_fops(d, 2, dir) },
+	{ "dgpio3_value", "dgpio3_direction", gpio_fops(d, 3, val), gpio_fops(d, 3, dir) },
+	{ "dgpio4_value", "dgpio4_direction", gpio_fops(d, 4, val), gpio_fops(d, 4, dir) },
+	{ "dgpio5_value", "dgpio5_direction", gpio_fops(d, 5, val), gpio_fops(d, 5, dir) },
+	{ "dgpio6_value", "dgpio6_direction", gpio_fops(d, 6, val), gpio_fops(d, 6, dir) },
+	{ "dgpio7_value", "dgpio7_direction", gpio_fops(d, 7, val), gpio_fops(d, 7, dir) },
+	{ "dgpio8_value", "dgpio8_direction", gpio_fops(d, 8, val), gpio_fops(d, 8, dir) },
+	{ "dgpio9_value", "dgpio9_direction", gpio_fops(d, 9, val), gpio_fops(d, 9, dir) },
+	{ "dgpio10_value", "dgpio10_direction", gpio_fops(d, 10, val), gpio_fops(d, 10, dir) },
+	{ "dgpio11_value", "dgpio11_direction", gpio_fops(d, 11, val), gpio_fops(d, 11, dir) },
+	{ "dgpio12_value", "dgpio12_direction", gpio_fops(d, 12, val), gpio_fops(d, 12, dir) },
+	{ "dgpio13_value", "dgpio13_direction", gpio_fops(d, 13, val), gpio_fops(d, 13, dir) },
+	{ "dgpio14_value", "dgpio14_direction", gpio_fops(d, 14, val), gpio_fops(d, 14, dir) },
+	{ "dgpio15_value", "dgpio15_direction", gpio_fops(d, 15, val), gpio_fops(d, 15, dir) },
+	{ "agpio0_value", "agpio0_direction", gpio_fops(a, 0, val), gpio_fops(a, 0, dir) },
+	{ "agpio1_value", "agpio1_direction", gpio_fops(a, 1, val), gpio_fops(a, 1, dir) },
+	{ "agpio2_value", "agpio2_direction", gpio_fops(a, 2, val), gpio_fops(a, 2, dir) },
+	{ "agpio3_value", "agpio3_direction", gpio_fops(a, 3, val), gpio_fops(a, 3, dir) },
+	{ "agpio4_value", "agpio4_direction", gpio_fops(a, 4, val), gpio_fops(a, 4, dir) },
+	{ "agpio5_value", "agpio5_direction", gpio_fops(a, 5, val), gpio_fops(a, 5, dir) },
+	{ "agpio6_value", "agpio6_direction", gpio_fops(a, 6, val), gpio_fops(a, 6, dir) },
+	{ "agpio7_value", "agpio7_direction", gpio_fops(a, 7, val), gpio_fops(a, 7, dir) },
+	{ "agpio8_value", "agpio8_direction", gpio_fops(a, 8, val), gpio_fops(a, 8, dir) },
+	{ "agpio9_value", "agpio9_direction", gpio_fops(a, 9, val), gpio_fops(a, 9, dir) },
+	{ "agpio10_value", "agpio10_direction", gpio_fops(a, 10, val), gpio_fops(a, 10, dir) },
+	{ "agpio11_value", "agpio11_direction", gpio_fops(a, 11, val), gpio_fops(a, 11, dir) },
+};
+
+static void adrv9002_debugfs_gpio_config_create(struct adrv9002_rf_phy *phy, struct dentry *d)
+{
+	int g;
+
+	for (g = 0; g < ARRAY_SIZE(gpio_helper); g++) {
+		debugfs_create_file_unsafe(gpio_helper[g].v, 0600, d, phy, gpio_helper[g].fops_l);
+		debugfs_create_file_unsafe(gpio_helper[g].d, 0600, d, phy, gpio_helper[g].fops_d);
+	}
+}
 
 void adrv9002_debugfs_create(struct adrv9002_rf_phy *phy, struct dentry *d)
 {
@@ -1006,4 +1397,7 @@ void adrv9002_debugfs_create(struct adrv9002_rf_phy *phy, struct dentry *d)
 		debugfs_create_file_unsafe(attr, 0200, d, rx,
 					   &adrv9002_rx_near_end_loopback_set_fops);
 	}
+
+	adrv9002_debugfs_fh_config_create(phy, d);
+	adrv9002_debugfs_gpio_config_create(phy, d);
 }
