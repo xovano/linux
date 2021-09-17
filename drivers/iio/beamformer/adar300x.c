@@ -14,6 +14,12 @@
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/sysfs.h>
 
+#include <linux/iio/trigger.h>
+#include <linux/iio/sw_trigger.h>
+#include <linux/iio/triggered_buffer.h>
+#include <linux/iio/trigger_consumer.h>
+#define MAX_TRIGER_NAME_LENGTH 50
+
 #define ADAR300x_REG_SPI_CONFIG			0x00
 #define ADAR300x_REG_1				0x01
 #define ADAR300x_REG_CHIPTYPE			0x03
@@ -320,8 +326,9 @@ struct adar300x_state {
 	struct iio_dma_buffer_queue		queue;
 	struct iio_buffer			*dma_buffer;
 	struct gpio_desc			*gpio_reset;
+	struct iio_sw_trigger			*sw_trig;
+	struct iio_trigger			*hw_trig;
 };
-
 
 enum adar300x_ADC_sel {
 	ADAR300x_ADC_ANALG0,
@@ -1421,25 +1428,6 @@ static const struct iio_buffer_access_funcs iio_dmaengine_buffer_ops = {
 	.flags = INDIO_BUFFER_FLAG_FIXED_WATERMARK,
 };
 
-static int adar300x_setup_buffer(struct device *dev, struct iio_dev *indio_dev,
-				int irq)
-{
-	struct adar300x_state *st;
-	int ret;
-
-	st = iio_priv(indio_dev);
-	indio_dev->modes |= INDIO_BUFFER_HARDWARE;
-	ret = iio_dma_buffer_init(&st->queue, dev, &dma_buffer_ops, st);
-	if (ret)
-		return ret;
-
-	st->queue.buffer.access = &iio_dmaengine_buffer_ops;
-	st->dma_buffer = iio_buffer_get(&st->queue.buffer);
-	indio_dev->buffer = st->dma_buffer;
-
-	return 0;
-}
-
 static const unsigned long adar300x_available_scan_masks[] = {
 	0x000000FF, 0x0000FF00, 0x0000FFFF, 0x00FF0000,
 	0x00FF00FF, 0x00FFFF00, 0x00FFFFFF, 0xFF000000,
@@ -1452,6 +1440,70 @@ static struct iio_info adar300x_info = {
 	.write_raw = &adar300x_write_raw,
 	.debugfs_reg_access = &adar300x_reg_access,
 };
+
+static irqreturn_t ad3552r_trigger_handler(int irq, void *p)
+{
+	struct iio_poll_func	*pf = p;
+	struct iio_dev		*indio_dev = pf->indio_dev;
+	struct iio_buffer	*buf = indio_dev->buffer;
+	struct adar300x_state	*dac = iio_priv(indio_dev);
+	char			lbuff[100];
+	int av, rd;
+
+	dev_err(&indio_dev->dev, "ad3552r_trigger_handler");
+
+	memset(lbuff, 0, sizeof(lbuff));
+	mutex_lock(&dac->lock);
+
+	av = buf->access->data_available(buf);
+	if (av > 0) {
+		rd = buf->access->read(buf, av, lbuff);
+		dev_err(&indio_dev->dev, "Read[%d]:%s", rd, lbuff);
+	}
+
+	iio_trigger_notify_done(indio_dev->trig);
+	mutex_unlock(&dac->lock);
+
+	return IRQ_HANDLED;
+}
+
+static int ad3552r_setup_trigger_buffer(struct device *dev,
+					struct iio_dev *indio_dev, int irq)
+{
+	struct adar300x_state	*dac = iio_priv(indio_dev);
+	struct iio_trigger	*hwtrig;
+	int			err;
+
+	/* Configure trigger buffer */
+	err = devm_iio_triggered_buffer_setup(dev, indio_dev, NULL,
+					      &ad3552r_trigger_handler, NULL);
+
+	if (err)
+		return err;
+	indio_dev->direction = IIO_DEVICE_DIRECTION_OUT;
+
+	if (!irq)
+		return 0;
+
+	hwtrig = devm_iio_trigger_alloc(dev, "%s-ldac-dev%d",
+					indio_dev->name,
+					indio_dev->id);
+	if (!hwtrig)
+		return -ENOMEM;
+
+	hwtrig->dev.parent = dev;
+	iio_trigger_set_drvdata(hwtrig, dac);
+	err = devm_iio_trigger_register(dev, hwtrig);
+	if (err < 0)
+		return err;
+
+	return devm_request_threaded_irq(dev, irq,
+					 iio_trigger_generic_data_rdy_poll,
+					 NULL,
+					 IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					 indio_dev->name,
+					 hwtrig);
+}
 
 static int adar300x_setup(struct iio_dev *indio_dev)
 {
@@ -1582,18 +1634,23 @@ static int adar300x_probe(struct spi_device *spi, const struct attribute_group *
 		indio_dev->info = &adar300x_info;
 		indio_dev->modes = INDIO_DIRECT_MODE;
 		indio_dev->direction = IIO_DEVICE_DIRECTION_OUT;
-		indio_dev->available_scan_masks = adar300x_available_scan_masks;
+		// indio_dev->available_scan_masks = adar300x_available_scan_masks;
 
 		ret = adar300x_setup(indio_dev);
 		if (ret < 0) {
 			dev_warn(&spi->dev, "Setup failed (%d), dev: %d, cnt: %d\n", ret, tmp, cnt);
 		} else {
 			/* Do setup for each device */
-			ret = adar300x_setup_buffer(&spi->dev, indio_dev, spi->irq);
+			ret = ad3552r_setup_trigger_buffer(&spi->dev, indio_dev, spi->irq);
 			if (ret) {
 				dev_err(&spi->dev, "Error buffer setup\n");
 				return ret;
 			}
+			// ret = adar300x_setup_buffer(&spi->dev, indio_dev, spi->irq);
+			// if (ret) {
+			// 	dev_err(&spi->dev, "Error buffer setup\n");
+			// 	return ret;
+			// }
 
 			ret = devm_iio_device_register(&spi->dev, indio_dev);
 			if (ret < 0)
@@ -1990,43 +2047,7 @@ static const struct attribute_group adar3000_attribute_group = {
 
 #define DECLARE_ADAR3000_CHANNELS(name)					\
 static const struct iio_chan_spec name[] = {				\
-	ADAR300x_DELAY_CH(0, 0, "BEAM0_H_EL0_DELAY"),			\
-	ADAR300x_ATTEN_CH(1, 0, "BEAM0_H_EL0_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(2, 1, "BEAM0_H_EL1_DELAY"),			\
-	ADAR300x_ATTEN_CH(3, 1, "BEAM0_H_EL1_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(4, 2, "BEAM0_H_EL2_DELAY"),			\
-	ADAR300x_ATTEN_CH(5, 2, "BEAM0_H_EL2_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(6, 3, "BEAM0_H_EL3_DELAY"),			\
-	ADAR300x_ATTEN_CH(7, 3, "BEAM0_H_EL3_ATTENUATION"),		\
-									\
-	ADAR300x_DELAY_CH(8, 4, "BEAM0_V_EL0_DELAY"),			\
-	ADAR300x_ATTEN_CH(9, 4, "BEAM0_V_EL0_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(10, 5, "BEAM0_V_EL1_DELAY"),			\
-	ADAR300x_ATTEN_CH(11, 5, "BEAM0_V_EL1_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(12, 6, "BEAM0_V_EL2_DELAY"),			\
-	ADAR300x_ATTEN_CH(13, 6, "BEAM0_V_EL2_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(14, 7, "BEAM0_V_EL3_DELAY"),			\
-	ADAR300x_ATTEN_CH(15, 7, "BEAM0_V_EL3_ATTENUATION"),		\
-									\
-	ADAR300x_DELAY_CH(16, 8, "BEAM1_V_EL0_DELAY"),			\
-	ADAR300x_ATTEN_CH(17, 8, "BEAM1_V_EL0_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(18, 9, "BEAM1_V_EL1_DELAY"),			\
-	ADAR300x_ATTEN_CH(19, 9, "BEAM1_V_EL1_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(20, 10, "BEAM1_V_EL2_DELAY"),			\
-	ADAR300x_ATTEN_CH(21, 10, "BEAM1_V_EL2_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(22, 11, "BEAM1_V_EL3_DELAY"),			\
-	ADAR300x_ATTEN_CH(23, 11, "BEAM1_V_EL3_ATTENUATION"),		\
-									\
-	ADAR300x_DELAY_CH(24, 12, "BEAM1_H_EL0_DELAY"),			\
-	ADAR300x_ATTEN_CH(25, 12, "BEAM1_H_EL0_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(26, 13, "BEAM1_H_EL1_DELAY"),			\
-	ADAR300x_ATTEN_CH(27, 13, "BEAM1_H_EL1_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(28, 14, "BEAM1_H_EL2_DELAY"),			\
-	ADAR300x_ATTEN_CH(29, 14, "BEAM1_H_EL2_ATTENUATION"),		\
-	ADAR300x_DELAY_CH(30, 15, "BEAM1_H_EL3_DELAY"),			\
-	ADAR300x_ATTEN_CH(31, 15, "BEAM1_H_EL3_ATTENUATION"),		\
-									\
-	ADAR300x_TEMP(32, 16, TEMP),					\
+	ADAR300x_DELAY_CH(0, 0, "BEAM0_H_EL0_DELAY"), \
 }
 
 DECLARE_ADAR3000_CHANNELS(adar3000_channels);
