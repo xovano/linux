@@ -5704,8 +5704,6 @@ int adrv9009_jesd204_link_setup(struct jesd204_dev *jdev,
 	struct device *dev = jesd204_dev_to_device(jdev);
 	struct adrv9009_jesd204_priv *priv = jesd204_dev_priv(jdev);
 	struct adrv9009_rf_phy *phy = priv->phy;
-	uint8_t mcsStatus = 0;
-	u8 pllLockStatus = 0;
 	int ret = TALACT_NO_ACTION;
 
 	dev_dbg(dev, "%s:%d reason %s\n", __func__, __LINE__,
@@ -5735,46 +5733,65 @@ int adrv9009_jesd204_link_setup(struct jesd204_dev *jdev,
 		return -EFAULT;
 	}
 
-	/* TALISE_initialize() loads the Talise device data structure
-	 * settings for the Rx/Tx/ORx profiles, FIR filters, digital
-	 * filter enables, calibrates the CLKPLL, loads the user provided Rx
-	 * gain tables, and configures the JESD204b serializers/framers/deserializers
-	 * and deframers.
-	 */
-	ret = TALISE_initialize(phy->talDevice, &phy->talInit);
-	if (ret != TALACT_NO_ACTION) {
-		dev_err(&phy->spi->dev,
-			"%s:%d (ret %d)", __func__, __LINE__, ret);
-		return -EFAULT;
-	}
+	return JESD204_STATE_CHANGE_DONE;
+}
 
-	/*******************************/
-	/***** CLKPLL Status Check *****/
-	/*******************************/
+static int adrv9009_jesd204_setup_stage0(struct jesd204_dev *jdev,
+                                         enum jesd204_state_op_reason reason)
+{
+        struct device *dev = jesd204_dev_to_device(jdev);
+        struct adrv9009_jesd204_priv *priv = jesd204_dev_priv(jdev);
+        struct adrv9009_rf_phy *phy = priv->phy;
+        uint8_t mcsStatus = 0;
+        u8 pllLockStatus = 0;
+	int ret = TALACT_NO_ACTION;
 
-	ret = TALISE_getPllsLockStatus(phy->talDevice, &pllLockStatus);
-	if (ret != TALACT_NO_ACTION) {
-		dev_err(&phy->spi->dev,
-			"%s:%d (ret %d)", __func__, __LINE__, ret);
-		return -EFAULT;
-	}
+        dev_dbg(dev, "%s:%d reason %s\n", __func__, __LINE__,
+                jesd204_state_op_reason_str(reason));
 
-	/* Assert that Talise CLKPLL is locked */
-	if ((pllLockStatus & 0x01) == 0) {
-		dev_err(&phy->spi->dev, "%s:%d: CLKPLL is unlocked (0x%X)",
-			__func__, __LINE__, pllLockStatus);
-		return -EFAULT;
-	}
+        if (reason != JESD204_STATE_OP_REASON_INIT)
+                return JESD204_STATE_CHANGE_DONE;
 
-	/*******************************************************/
-	/**** Perform MultiChip Sync (MCS) on Talise Device ***/
-	/*******************************************************/
-	ret = TALISE_enableMultichipSync(phy->talDevice, 1, &mcsStatus);
-	if (ret != TALACT_NO_ACTION) {
-		dev_err(&phy->spi->dev,
-			"%s:%d (ret %d)", __func__, __LINE__, ret);
-		return -EFAULT;
-	}
+        /* TALISE_initialize() loads the Talise device data structure
+         * settings for the Rx/Tx/ORx profiles, FIR filters, digital
+         * filter enables, calibrates the CLKPLL, loads the user provided Rx
+         * gain tables, and configures the JESD204b serializers/framers/deserializers
+         * and deframers.
+         */
+        ret = TALISE_initialize(phy->talDevice, &phy->talInit);
+        if (ret != TALACT_NO_ACTION) {
+                dev_err(&phy->spi->dev,
+                        "%s:%d (ret %d)", __func__, __LINE__, ret);
+                return -EFAULT;
+        }
+
+        /*******************************/
+        /***** CLKPLL Status Check *****/
+        /*******************************/
+
+        ret = TALISE_getPllsLockStatus(phy->talDevice, &pllLockStatus);
+        if (ret != TALACT_NO_ACTION) {
+                dev_err(&phy->spi->dev,
+                        "%s:%d (ret %d)", __func__, __LINE__, ret);
+                return -EFAULT;
+        }
+
+        /* Assert that Talise CLKPLL is locked */
+        if ((pllLockStatus & 0x01) == 0) {
+                dev_err(&phy->spi->dev, "%s:%d: CLKPLL is unlocked (0x%X)",
+                        __func__, __LINE__, pllLockStatus);
+                return -EFAULT;
+        }
+
+        /*******************************************************/
+        /**** Perform MultiChip Sync (MCS) on Talise Device ***/
+        /*******************************************************/
+        ret = TALISE_enableMultichipSync(phy->talDevice, 1, &mcsStatus);
+        if (ret != TALACT_NO_ACTION) {
+                dev_err(&phy->spi->dev,
+                        "%s:%d (ret %d)", __func__, __LINE__, ret);
+                return -EFAULT;
+        }
 
 	return JESD204_STATE_CHANGE_DONE;
 }
@@ -6190,6 +6207,11 @@ static const struct jesd204_dev_data jesd204_adrv9009_init = {
 		[JESD204_OP_LINK_RUNNING] = {
 			.per_link = adrv9009_jesd204_link_running,
 		},
+                [JESD204_OP_OPT_SETUP_STAGE0] = {
+                        .per_device = adrv9009_jesd204_setup_stage0,
+                        .mode = JESD204_STATE_OP_MODE_PER_DEVICE,
+                        .post_state_sysref = true,
+                },
 		[JESD204_OP_OPT_SETUP_STAGE1] = {
 			.per_device = adrv9009_jesd204_setup_stage1,
 			.mode = JESD204_STATE_OP_MODE_PER_DEVICE,
