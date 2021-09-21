@@ -11,7 +11,8 @@
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
-#include <linux/iio/buffer-dma.h>
+// #include <linux/iio/buffer-dma.h>
+#include <linux/iio/buffer_impl.h>
 #include <linux/iio/sysfs.h>
 
 #include <linux/iio/trigger.h>
@@ -323,7 +324,7 @@ struct adar300x_state {
 	enum adar300x_beamstate_mode_ctrl	beam_mode[ADAR300x_BEAMS_PER_DEVICE];
 	enum adar300x_beamstate_mode_ctrl	beam_load_mode[ADAR300x_BEAMS_PER_DEVICE];
 	struct mutex				lock;
-	struct iio_dma_buffer_queue		queue;
+	// struct iio_dma_buffer_queue		queue;
 	struct iio_buffer			*dma_buffer;
 	struct gpio_desc			*gpio_reset;
 	struct iio_sw_trigger			*sw_trig;
@@ -1316,117 +1317,71 @@ static bool adar300x_is_beam_active(u8 beam, u32 mask)
 	return (mask & (1 << (ADAR300x_CHANNELS_PER_BEAM * beam)));
 }
 
-static int adar300x_ram_write(struct adar300x_state *st,
-			      struct iio_dma_buffer_block *block,
-			      u32 mask)
-{
-	char *data = block->vaddr;
-	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
-	int ret;
-	int i, j, beam, ram_beam_state;
-	u16 addr, unp_bst_len, p_bst_len;
+// static int adar300x_ram_write(struct adar300x_state *st,
+// 			      struct iio_dma_buffer_block *block,
+// 			      u32 mask)
+// {
+// 	char *data = block->vaddr;
+// 	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
+// 	int ret;
+// 	int i, j, beam, ram_beam_state;
+// 	u16 addr, unp_bst_len, p_bst_len;
 
-	mutex_lock(&st->lock);
-	unp_bst_len = st->chip_info->unpacked_beamst_len;
-	p_bst_len = st->chip_info->packed_beamst_len;
+// 	mutex_lock(&st->lock);
+// 	unp_bst_len = st->chip_info->unpacked_beamst_len;
+// 	p_bst_len = st->chip_info->packed_beamst_len;
 
-	for (i = 0; i < block->block.bytes_used; i++)
-		data[i] &= ADAR300x_MAX_RAW;
+// 	for (i = 0; i < block->block.bytes_used; i++)
+// 		data[i] &= ADAR300x_MAX_RAW;
 
-	for (i = 0, beam = 0, ram_beam_state = 0;
-	     ((i + unp_bst_len) <= block->block.bytes_used) &&
-	     ram_beam_state < ADAR300x_MAX_RAM_STATES;) {
+// 	for (i = 0, beam = 0, ram_beam_state = 0;
+// 	     ((i + unp_bst_len) <= block->block.bytes_used) &&
+// 	     ram_beam_state < ADAR300x_MAX_RAM_STATES;) {
 
-		if (beam == ADAR300x_BEAMS_PER_DEVICE)
-			ram_beam_state++;
+// 		if (beam == ADAR300x_BEAMS_PER_DEVICE)
+// 			ram_beam_state++;
 
-		beam %= ADAR300x_BEAMS_PER_DEVICE;
-		if (!adar300x_is_beam_active(beam, mask)) {
-			beam++;
-			continue;
-		}
-		adar300x_pack_data(packed, &data[i], ADAR300x_UNPACKED_BEAMSTATE_LEN);
+// 		beam %= ADAR300x_BEAMS_PER_DEVICE;
+// 		if (!adar300x_is_beam_active(beam, mask)) {
+// 			beam++;
+// 			continue;
+// 		}
+// 		adar300x_pack_data(packed, &data[i], ADAR300x_UNPACKED_BEAMSTATE_LEN);
 
-		if (st->beam_load_mode[beam] == ADAR300x_MEMORY_CTRL) {
-			ret = adar300x_set_page(st, beam + 1);
-			if (ret < 0)
-				goto err_unlock;
+// 		if (st->beam_load_mode[beam] == ADAR300x_MEMORY_CTRL) {
+// 			ret = adar300x_set_page(st, beam + 1);
+// 			if (ret < 0)
+// 				goto err_unlock;
 
-			addr = ADAR300x_RAM_BEAM_STATE_ADDR(ram_beam_state);
-			addr += st->beam_index[beam];
-			if ((addr + ADAR300x_PACKED_BEAMSTATE_LEN - 1) > ADAR300x_RAM_MAX_ADDR)
-				return -EINVAL;
+// 			addr = ADAR300x_RAM_BEAM_STATE_ADDR(ram_beam_state);
+// 			addr += st->beam_index[beam];
+// 			if ((addr + ADAR300x_PACKED_BEAMSTATE_LEN - 1) > ADAR300x_RAM_MAX_ADDR)
+// 				return -EINVAL;
 
-		} else if (st->beam_load_mode[beam] == ADAR300x_FIFO_CTRL) {
-			ret = adar300x_set_page(st, ADAR300x_FIFO_PAGE);
-			if (ret < 0)
-				goto err_unlock;
+// 		} else if (st->beam_load_mode[beam] == ADAR300x_FIFO_CTRL) {
+// 			ret = adar300x_set_page(st, ADAR300x_FIFO_PAGE);
+// 			if (ret < 0)
+// 				goto err_unlock;
 
-			addr = ADAR300x_FIFO_LOAD(beam);
-		} else
-			return -EINVAL;
+// 			addr = ADAR300x_FIFO_LOAD(beam);
+// 		} else
+// 			return -EINVAL;
 
-		for (j = 0; j < p_bst_len; j++) {
-			ret = regmap_write(st->regmap, ADAR300x_REG(st, addr + j), packed[j]);
-			if (ret < 0)
-				goto err_unlock;
-		}
+// 		for (j = 0; j < p_bst_len; j++) {
+// 			ret = regmap_write(st->regmap, ADAR300x_REG(st, addr + j), packed[j]);
+// 			if (ret < 0)
+// 				goto err_unlock;
+// 		}
 
-		i += unp_bst_len;
-		beam++;
-	}
+// 		i += unp_bst_len;
+// 		beam++;
+// 	}
 
-err_unlock:
-	mutex_unlock(&st->lock);
+// err_unlock:
+// 	mutex_unlock(&st->lock);
 
-	return ret;
-}
-
-/* Will be called only when blocksize if full */
-static int hw_submit_block(struct iio_dma_buffer_queue *queue,
-	struct iio_dma_buffer_block *block)
-{
-	struct adar300x_state *st = queue->driver_data;
-	int ret;
-	u32 ch_mask = *queue->buffer.scan_mask;
-
-	block->block.bytes_used = block->block.size;
-	ret = adar300x_ram_write(st, block, ch_mask);
-	if (ret < 0)
-		return ret;
-
-	iio_dma_buffer_block_done(block);
-
-	return 0;
-}
-
-static void hw_abort(struct iio_dma_buffer_queue *queue)
-{
-}
-
-static const struct iio_dma_buffer_ops dma_buffer_ops = {
-	.submit = hw_submit_block,
-	.abort = hw_abort,
-};
-
-static void iio_dmaengine_buffer_release(struct iio_buffer *buf)
-{
-}
-
-static const struct iio_buffer_access_funcs iio_dmaengine_buffer_ops = {
-	.read = iio_dma_buffer_read,
-	.write = iio_dma_buffer_write,
-	.set_bytes_per_datum = iio_dma_buffer_set_bytes_per_datum,
-	.set_length = iio_dma_buffer_set_length,
-	.enable = iio_dma_buffer_enable,
-	.disable = iio_dma_buffer_disable,
-	.data_available = iio_dma_buffer_data_available,
-	.space_available = iio_dma_buffer_space_available,
-	.release = iio_dmaengine_buffer_release,
-
-	.modes = INDIO_BUFFER_HARDWARE,
-	.flags = INDIO_BUFFER_FLAG_FIXED_WATERMARK,
-};
+// 	return ret;
+// }
 
 static const unsigned long adar300x_available_scan_masks[] = {
 	0x000000FF, 0x0000FF00, 0x0000FFFF, 0x00FF0000,
@@ -1457,8 +1412,8 @@ static irqreturn_t ad3552r_trigger_handler(int irq, void *p)
 
 	av = buf->access->data_available(buf);
 	if (av > 0) {
-		rd = buf->access->read(buf, av, lbuff);
-		dev_err(&indio_dev->dev, "Read[%d]:%s", rd, lbuff);
+		rd = buf->access->read(buf, (av * hweight_long(*buf->scan_mask)), lbuff);
+		dev_err(&indio_dev->dev, "Read[mask%x][mask%d][av:%d][%d]:%s", *buf->scan_mask, hweight_long(*buf->scan_mask), av, rd, lbuff);
 	}
 
 	iio_trigger_notify_done(indio_dev->trig);
@@ -1646,11 +1601,6 @@ static int adar300x_probe(struct spi_device *spi, const struct attribute_group *
 				dev_err(&spi->dev, "Error buffer setup\n");
 				return ret;
 			}
-			// ret = adar300x_setup_buffer(&spi->dev, indio_dev, spi->irq);
-			// if (ret) {
-			// 	dev_err(&spi->dev, "Error buffer setup\n");
-			// 	return ret;
-			// }
 
 			ret = devm_iio_device_register(&spi->dev, indio_dev);
 			if (ret < 0)
@@ -2047,7 +1997,43 @@ static const struct attribute_group adar3000_attribute_group = {
 
 #define DECLARE_ADAR3000_CHANNELS(name)					\
 static const struct iio_chan_spec name[] = {				\
-	ADAR300x_DELAY_CH(0, 0, "BEAM0_H_EL0_DELAY"), \
+	ADAR300x_DELAY_CH(0, 0, "BEAM0_H_EL0_DELAY"),			\
+	ADAR300x_ATTEN_CH(1, 0, "BEAM0_H_EL0_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(2, 1, "BEAM0_H_EL1_DELAY"),			\
+	ADAR300x_ATTEN_CH(3, 1, "BEAM0_H_EL1_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(4, 2, "BEAM0_H_EL2_DELAY"),			\
+	ADAR300x_ATTEN_CH(5, 2, "BEAM0_H_EL2_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(6, 3, "BEAM0_H_EL3_DELAY"),			\
+	ADAR300x_ATTEN_CH(7, 3, "BEAM0_H_EL3_ATTENUATION"),		\
+									\
+	ADAR300x_DELAY_CH(8, 4, "BEAM0_V_EL0_DELAY"),			\
+	ADAR300x_ATTEN_CH(9, 4, "BEAM0_V_EL0_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(10, 5, "BEAM0_V_EL1_DELAY"),			\
+	ADAR300x_ATTEN_CH(11, 5, "BEAM0_V_EL1_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(12, 6, "BEAM0_V_EL2_DELAY"),			\
+	ADAR300x_ATTEN_CH(13, 6, "BEAM0_V_EL2_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(14, 7, "BEAM0_V_EL3_DELAY"),			\
+	ADAR300x_ATTEN_CH(15, 7, "BEAM0_V_EL3_ATTENUATION"),		\
+									\
+	ADAR300x_DELAY_CH(16, 8, "BEAM1_V_EL0_DELAY"),			\
+	ADAR300x_ATTEN_CH(17, 8, "BEAM1_V_EL0_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(18, 9, "BEAM1_V_EL1_DELAY"),			\
+	ADAR300x_ATTEN_CH(19, 9, "BEAM1_V_EL1_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(20, 10, "BEAM1_V_EL2_DELAY"),			\
+	ADAR300x_ATTEN_CH(21, 10, "BEAM1_V_EL2_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(22, 11, "BEAM1_V_EL3_DELAY"),			\
+	ADAR300x_ATTEN_CH(23, 11, "BEAM1_V_EL3_ATTENUATION"),		\
+									\
+	ADAR300x_DELAY_CH(24, 12, "BEAM1_H_EL0_DELAY"),			\
+	ADAR300x_ATTEN_CH(25, 12, "BEAM1_H_EL0_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(26, 13, "BEAM1_H_EL1_DELAY"),			\
+	ADAR300x_ATTEN_CH(27, 13, "BEAM1_H_EL1_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(28, 14, "BEAM1_H_EL2_DELAY"),			\
+	ADAR300x_ATTEN_CH(29, 14, "BEAM1_H_EL2_ATTENUATION"),		\
+	ADAR300x_DELAY_CH(30, 15, "BEAM1_H_EL3_DELAY"),			\
+	ADAR300x_ATTEN_CH(31, 15, "BEAM1_H_EL3_ATTENUATION"),		\
+									\
+	ADAR300x_TEMP(32, 16, TEMP),					\
 }
 
 DECLARE_ADAR3000_CHANNELS(adar3000_channels);
