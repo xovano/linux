@@ -449,31 +449,6 @@ static int adar300x_set_page(struct adar300x_state *st, enum adar300x_pages page
 				  ADAR300x_ADDRESS_PAGE_MASK, page);
 }
 
-static int adar300x_ram_read(struct adar300x_state *st,
-			     enum adar300x_pages page, u16 addr, char *data)
-{
-	u32 val;
-	int ret;
-
-	mutex_lock(&st->lock);
-	ret = adar300x_set_page(st, page);
-	if (ret < 0)
-		goto err_unlock;
-
-	ret = regmap_read(st->regmap, ADAR300x_REG(st, addr), &val);
-	if (ret < 0)
-		goto err_unlock;
-
-	/* Second read necessary for valid data */
-	ret = regmap_read(st->regmap, ADAR300x_REG(st, addr), &val);
-	*data = val;
-
-err_unlock:
-	mutex_unlock(&st->lock);
-
-	return ret;
-}
-
 static void adar300x_unpack_data(const char *packed, char *unpacked, int unpacked_len)
 {
 	int i, j;
@@ -640,6 +615,7 @@ static int adar300x_set_mem_value(struct iio_dev *indio_dev,
 	struct adar300x_state *st = iio_priv(indio_dev);
 	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
 	char unpacked[ADAR300x_UNPACKED_BEAMSTATE_LEN];
+	u32 lval;
 	u16 beamst_addr;
 	u8 beamst_no, beam;
 	int ret, i;
@@ -648,12 +624,20 @@ static int adar300x_set_mem_value(struct iio_dev *indio_dev,
 	beam = chan->address / st->chip_info->unpacked_beamst_len;
 	beamst_no = st->beam_index[beam];
 	beamst_addr = ADAR300x_RAM_BEAM_STATE_ADDR(beamst_no);
+	ret = adar300x_set_page(st, ADAR300x_BEAM0H_PAGE + beam);
+	if (ret < 0)
+		goto err_unlock;
 
 	for (i = 0; i < ADAR300x_PACKED_BEAMSTATE_LEN; i++) {
-		ret = adar300x_ram_read(st, ADAR300x_BEAM0H_PAGE + beam,
-					beamst_addr + i, &packed[i]);
+		ret = regmap_read(st->regmap, ADAR300x_REG(st, beamst_addr + i), &lval);
 		if (ret < 0)
 			goto err_unlock;
+
+		/* Second read necessary for valid data */
+		ret = regmap_read(st->regmap, ADAR300x_REG(st, beamst_addr + i), &lval);
+		if (ret < 0)
+			goto err_unlock;
+		packed[i] = lval;
 	}
 
 	adar300x_unpack_data(packed, unpacked, ADAR300x_UNPACKED_BEAMSTATE_LEN);
@@ -680,6 +664,7 @@ static int adar300x_get_mem_value(struct iio_dev *indio_dev,
 	struct adar300x_state *st = iio_priv(indio_dev);
 	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
 	char unpacked[ADAR300x_UNPACKED_BEAMSTATE_LEN];
+	u32 lval;
 	u16 addr;
 	u8 beamst_no, beam;
 	int ret, i;
@@ -688,11 +673,21 @@ static int adar300x_get_mem_value(struct iio_dev *indio_dev,
 	beam = chan->address / st->chip_info->unpacked_beamst_len;
 	beamst_no = st->beam_index[beam];
 	addr = ADAR300x_RAM_BEAM_STATE_ADDR(beamst_no);
+	ret = adar300x_set_page(st, ADAR300x_BEAM0H_PAGE + beam);
+	if (ret < 0)
+		goto err_unlock;
 
 	for (i = 0; i < ADAR300x_PACKED_BEAMSTATE_LEN; i++) {
-		ret = adar300x_ram_read(st, ADAR300x_BEAM0H_PAGE + beam, addr + i, &packed[i]);
+		ret = regmap_read(st->regmap, ADAR300x_REG(st, addr + i), &lval);
 		if (ret < 0)
 			goto err_unlock;
+
+		/* Second read necessary for valid data */
+		ret = regmap_read(st->regmap, ADAR300x_REG(st, addr + i), &lval);
+		if (ret < 0)
+			goto err_unlock;
+
+		packed[i] = lval;
 	}
 
 	adar300x_unpack_data(packed, unpacked, ADAR300x_UNPACKED_BEAMSTATE_LEN);
@@ -1323,7 +1318,7 @@ static int adar300x_ram_write(struct adar300x_state *st,
 			      u32 mask)
 {
 	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
-	int ret;
+	int ret = 0;
 	int i, j, beam, ram_beam_state;
 	u16 addr, unp_bst_len, p_bst_len;
 
@@ -1337,7 +1332,6 @@ static int adar300x_ram_write(struct adar300x_state *st,
 	for (i = 0, beam = 0, ram_beam_state = 0;
 	     ((i + unp_bst_len) <= len) &&
 	     ram_beam_state < ADAR300x_MAX_RAM_STATES;) {
-
 		if (beam == ADAR300x_BEAMS_PER_DEVICE)
 			ram_beam_state++;
 
@@ -1356,6 +1350,8 @@ static int adar300x_ram_write(struct adar300x_state *st,
 			addr = ADAR300x_RAM_BEAM_STATE_ADDR(ram_beam_state);
 			addr += st->beam_index[beam];
 			if ((addr + ADAR300x_PACKED_BEAMSTATE_LEN - 1) > ADAR300x_RAM_MAX_ADDR) {
+				dev_err(&st->spi->dev,
+					"Ram write err: Addr:%x, Beamst:%d", addr, ram_beam_state);
 				ret = -EINVAL;
 				goto err_unlock;
 			}
@@ -1366,6 +1362,7 @@ static int adar300x_ram_write(struct adar300x_state *st,
 
 			addr = ADAR300x_FIFO_LOAD(beam);
 		} else {
+			dev_err(&st->spi->dev, "Select Meory or FIFO for writting");
 			ret = -EINVAL;
 			goto err_unlock;
 		}
@@ -1379,7 +1376,7 @@ static int adar300x_ram_write(struct adar300x_state *st,
 		i += unp_bst_len;
 		beam++;
 	}
-
+	dev_err(&st->spi->dev, "memory write OK");
 err_unlock:
 	mutex_unlock(&st->lock);
 
@@ -1392,20 +1389,22 @@ static irqreturn_t ad3552r_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct iio_buffer *buf = indio_dev->buffer;
 	struct adar300x_state *st = iio_priv(indio_dev);
-	char lbuff[ADAR300x_BEAMS_PER_DEVICE * ADAR300x_CHANNELS_PER_BEAM * ADAR300x_MAX_RAM_STATES];
+	char *lbuff;
 	int av, rd, len, ret;
 
 	dev_err(&indio_dev->dev, "ad3552r_trigger_handler");
 
-	memset(lbuff, 0, sizeof(lbuff));
 	av = buf->access->data_available(buf);
+	dev_err(&indio_dev->dev, "av:%d", av);
 	if (av > 0) {
 		len = av * hweight_long(*buf->scan_mask);
+		lbuff = kcalloc(len, sizeof(*lbuff), GFP_KERNEL);
 		rd = buf->access->read(buf, len, lbuff);
 		dev_err(&indio_dev->dev, "Read[mask%x][mask%d][av:%d][%d]:%s", *buf->scan_mask, len, av, rd, lbuff);
 		ret = adar300x_ram_write(st, lbuff, len, *buf->scan_mask);
 		if (ret)
 			dev_err(&indio_dev->dev, "adar300x_ram_write() error:%d", ret);
+		kfree(lbuff);
 	}
 
 	iio_trigger_notify_done(indio_dev->trig);
