@@ -11,7 +11,6 @@
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
-// #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer_impl.h>
 #include <linux/iio/sysfs.h>
 
@@ -19,6 +18,7 @@
 #include <linux/iio/sw_trigger.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/iio/trigger_consumer.h>
+
 #define MAX_TRIGER_NAME_LENGTH 50
 
 #define ADAR300x_REG_SPI_CONFIG			0x00
@@ -1317,71 +1317,101 @@ static bool adar300x_is_beam_active(u8 beam, u32 mask)
 	return (mask & (1 << (ADAR300x_CHANNELS_PER_BEAM * beam)));
 }
 
-// static int adar300x_ram_write(struct adar300x_state *st,
-// 			      struct iio_dma_buffer_block *block,
-// 			      u32 mask)
-// {
-// 	char *data = block->vaddr;
-// 	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
-// 	int ret;
-// 	int i, j, beam, ram_beam_state;
-// 	u16 addr, unp_bst_len, p_bst_len;
+static int adar300x_ram_write(struct adar300x_state *st,
+			      char *data,
+			      int len,
+			      u32 mask)
+{
+	char packed[ADAR300x_PACKED_BEAMSTATE_LEN];
+	int ret;
+	int i, j, beam, ram_beam_state;
+	u16 addr, unp_bst_len, p_bst_len;
 
-// 	mutex_lock(&st->lock);
-// 	unp_bst_len = st->chip_info->unpacked_beamst_len;
-// 	p_bst_len = st->chip_info->packed_beamst_len;
+	mutex_lock(&st->lock);
+	unp_bst_len = st->chip_info->unpacked_beamst_len;
+	p_bst_len = st->chip_info->packed_beamst_len;
 
-// 	for (i = 0; i < block->block.bytes_used; i++)
-// 		data[i] &= ADAR300x_MAX_RAW;
+	for (i = 0; i < len; i++)
+		data[i] &= ADAR300x_MAX_RAW;
 
-// 	for (i = 0, beam = 0, ram_beam_state = 0;
-// 	     ((i + unp_bst_len) <= block->block.bytes_used) &&
-// 	     ram_beam_state < ADAR300x_MAX_RAM_STATES;) {
+	for (i = 0, beam = 0, ram_beam_state = 0;
+	     ((i + unp_bst_len) <= len) &&
+	     ram_beam_state < ADAR300x_MAX_RAM_STATES;) {
 
-// 		if (beam == ADAR300x_BEAMS_PER_DEVICE)
-// 			ram_beam_state++;
+		if (beam == ADAR300x_BEAMS_PER_DEVICE)
+			ram_beam_state++;
 
-// 		beam %= ADAR300x_BEAMS_PER_DEVICE;
-// 		if (!adar300x_is_beam_active(beam, mask)) {
-// 			beam++;
-// 			continue;
-// 		}
-// 		adar300x_pack_data(packed, &data[i], ADAR300x_UNPACKED_BEAMSTATE_LEN);
+		beam %= ADAR300x_BEAMS_PER_DEVICE;
+		if (!adar300x_is_beam_active(beam, mask)) {
+			beam++;
+			continue;
+		}
+		adar300x_pack_data(packed, &data[i], ADAR300x_UNPACKED_BEAMSTATE_LEN);
 
-// 		if (st->beam_load_mode[beam] == ADAR300x_MEMORY_CTRL) {
-// 			ret = adar300x_set_page(st, beam + 1);
-// 			if (ret < 0)
-// 				goto err_unlock;
+		if (st->beam_load_mode[beam] == ADAR300x_MEMORY_CTRL) {
+			ret = adar300x_set_page(st, beam + 1);
+			if (ret < 0)
+				goto err_unlock;
 
-// 			addr = ADAR300x_RAM_BEAM_STATE_ADDR(ram_beam_state);
-// 			addr += st->beam_index[beam];
-// 			if ((addr + ADAR300x_PACKED_BEAMSTATE_LEN - 1) > ADAR300x_RAM_MAX_ADDR)
-// 				return -EINVAL;
+			addr = ADAR300x_RAM_BEAM_STATE_ADDR(ram_beam_state);
+			addr += st->beam_index[beam];
+			if ((addr + ADAR300x_PACKED_BEAMSTATE_LEN - 1) > ADAR300x_RAM_MAX_ADDR) {
+				ret = -EINVAL;
+				goto err_unlock;
+			}
+		} else if (st->beam_load_mode[beam] == ADAR300x_FIFO_CTRL) {
+			ret = adar300x_set_page(st, ADAR300x_FIFO_PAGE);
+			if (ret < 0)
+				goto err_unlock;
 
-// 		} else if (st->beam_load_mode[beam] == ADAR300x_FIFO_CTRL) {
-// 			ret = adar300x_set_page(st, ADAR300x_FIFO_PAGE);
-// 			if (ret < 0)
-// 				goto err_unlock;
+			addr = ADAR300x_FIFO_LOAD(beam);
+		} else {
+			ret = -EINVAL;
+			goto err_unlock;
+		}
 
-// 			addr = ADAR300x_FIFO_LOAD(beam);
-// 		} else
-// 			return -EINVAL;
+		for (j = 0; j < p_bst_len; j++) {
+			ret = regmap_write(st->regmap, ADAR300x_REG(st, addr + j), packed[j]);
+			if (ret < 0)
+				goto err_unlock;
+		}
 
-// 		for (j = 0; j < p_bst_len; j++) {
-// 			ret = regmap_write(st->regmap, ADAR300x_REG(st, addr + j), packed[j]);
-// 			if (ret < 0)
-// 				goto err_unlock;
-// 		}
+		i += unp_bst_len;
+		beam++;
+	}
 
-// 		i += unp_bst_len;
-// 		beam++;
-// 	}
+err_unlock:
+	mutex_unlock(&st->lock);
 
-// err_unlock:
-// 	mutex_unlock(&st->lock);
+	return ret;
+}
 
-// 	return ret;
-// }
+static irqreturn_t ad3552r_trigger_handler(int irq, void *p)
+{
+	struct iio_poll_func *pf = p;
+	struct iio_dev *indio_dev = pf->indio_dev;
+	struct iio_buffer *buf = indio_dev->buffer;
+	struct adar300x_state *st = iio_priv(indio_dev);
+	char lbuff[ADAR300x_BEAMS_PER_DEVICE * ADAR300x_CHANNELS_PER_BEAM * ADAR300x_MAX_RAM_STATES];
+	int av, rd, len, ret;
+
+	dev_err(&indio_dev->dev, "ad3552r_trigger_handler");
+
+	memset(lbuff, 0, sizeof(lbuff));
+	av = buf->access->data_available(buf);
+	if (av > 0) {
+		len = av * hweight_long(*buf->scan_mask);
+		rd = buf->access->read(buf, len, lbuff);
+		dev_err(&indio_dev->dev, "Read[mask%x][mask%d][av:%d][%d]:%s", *buf->scan_mask, len, av, rd, lbuff);
+		ret = adar300x_ram_write(st, lbuff, len, *buf->scan_mask);
+		if (ret)
+			dev_err(&indio_dev->dev, "adar300x_ram_write() error:%d", ret);
+	}
+
+	iio_trigger_notify_done(indio_dev->trig);
+
+	return IRQ_HANDLED;
+}
 
 static const unsigned long adar300x_available_scan_masks[] = {
 	0x000000FF, 0x0000FF00, 0x0000FFFF, 0x00FF0000,
@@ -1395,32 +1425,6 @@ static struct iio_info adar300x_info = {
 	.write_raw = &adar300x_write_raw,
 	.debugfs_reg_access = &adar300x_reg_access,
 };
-
-static irqreturn_t ad3552r_trigger_handler(int irq, void *p)
-{
-	struct iio_poll_func	*pf = p;
-	struct iio_dev		*indio_dev = pf->indio_dev;
-	struct iio_buffer	*buf = indio_dev->buffer;
-	struct adar300x_state	*dac = iio_priv(indio_dev);
-	char			lbuff[100];
-	int av, rd;
-
-	dev_err(&indio_dev->dev, "ad3552r_trigger_handler");
-
-	memset(lbuff, 0, sizeof(lbuff));
-	mutex_lock(&dac->lock);
-
-	av = buf->access->data_available(buf);
-	if (av > 0) {
-		rd = buf->access->read(buf, (av * hweight_long(*buf->scan_mask)), lbuff);
-		dev_err(&indio_dev->dev, "Read[mask%x][mask%d][av:%d][%d]:%s", *buf->scan_mask, hweight_long(*buf->scan_mask), av, rd, lbuff);
-	}
-
-	iio_trigger_notify_done(indio_dev->trig);
-	mutex_unlock(&dac->lock);
-
-	return IRQ_HANDLED;
-}
 
 static int ad3552r_setup_trigger_buffer(struct device *dev,
 					struct iio_dev *indio_dev, int irq)
@@ -1589,7 +1593,7 @@ static int adar300x_probe(struct spi_device *spi, const struct attribute_group *
 		indio_dev->info = &adar300x_info;
 		indio_dev->modes = INDIO_DIRECT_MODE;
 		indio_dev->direction = IIO_DEVICE_DIRECTION_OUT;
-		// indio_dev->available_scan_masks = adar300x_available_scan_masks;
+		indio_dev->available_scan_masks = adar300x_available_scan_masks;
 
 		ret = adar300x_setup(indio_dev);
 		if (ret < 0) {
