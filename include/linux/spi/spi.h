@@ -529,6 +529,10 @@ struct spi_controller {
 #define SPI_MASTER_BOTH_CS	BIT(8)		/* assert both chip selects */
 #define SPI_MASTER_U_PAGE	BIT(9)		/* select upper flash */
 #define SPI_DUAL_BYTE_OP	BIT(10)		/* select Dual-Byte opcode */
+
+	/* flag indicating this is a non-devres managed controller */
+	bool			devm_allocated;
+
 	/* flag indicating this is an SPI slave controller */
 	bool			slave;
 
@@ -661,8 +665,8 @@ struct spi_controller {
 	int			*cs_gpios;
 	struct gpio_desc	**cs_gpiods;
 	bool			use_gpio_descriptors;
-	u8			unused_native_cs;
-	u8			max_native_cs;
+	s8			unused_native_cs;
+	s8			max_native_cs;
 
 	/* statistics */
 	struct spi_statistics	statistics;
