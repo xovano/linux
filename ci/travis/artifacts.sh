@@ -1,6 +1,8 @@
 #!/bin/bash -e
 # SPDX-License-Identifier: (GPL-1.0-only OR BSD-2-Clause)
 
+set -x
+
 bcm_types='bcm2709 bcm2711 bcmrpi'
 
 artifacts_to_archive() {
